@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 测试 / 覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+coverage.xml
+*.cover
+
+# 运行时产物
+runtime/
+out.mp3
+*.tmp
+*.bak
+
+# 凭据 — 必须排除（CLAUDE.md Floor Rule 4）
+.env
+.env.*
+!.env.example
+
+# 编辑器 / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 日志 / 中间产物
+logs/*.log
+logs/*.tmp
+*.pid
+
+# 调度产物
+run/quota.json
+logs/daily_report.md
+
+# V3 特有
+sample/*.mp4
+!sample/.gitkeep
+assets/*.jpg
+!assets/.gitkeep
