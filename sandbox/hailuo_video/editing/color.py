@@ -1,31 +1,27 @@
-"""V3.2 REQ-303 Editing Engine — 后期处理（色彩归一化子功能先行）。
+"""V3.2 重构：editing 子模块拆分 — 色彩归一化。
 
-设计原则：
-  - 单一职责：色彩归一化（color balance / exposure / saturation 对齐）
-  - 其它子功能（运动匹配剪切、xfade 叠化、LUT 调色、AI 剪辑）后续 REQ 单独加
-  - ffmpeg 调用走 subprocess；runner 可注入 mock（与 concat_engine.py 一致）
-  - 硬失败模式：ffmpeg 退出码 ≠ 0 → EditingError，不静默退化（CLAUDE.md R4）
-
-CLI 子命令后续由 cli.py:cmd_editing 暴露（V3.2 实装）。
+原 editing_engine.py:
+  - L30-62 (ColorStats / EditingResult dataclasses)
+  - L116-194 (_ffmpeg_extract_middle_frame / _compute_color_stats_from_png helpers)
+  - L197-373 (analyze_video_color / compute_target_stats / _compute_eq_filter / normalize_clip / color_normalize_pipeline)
+  - L378-388 (is_available)
 """
 from __future__ import annotations
 
-import io as _stdlib_io
-import re
-import shutil
-import subprocess
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from hailuo_video.editing import ffmpeg_runner
+from hailuo_video.editing.errors import EditingError
+# 通过 editing 包访问 _probe_duration / _resolve_ffmpeg_exe，让 monkeypatch.setattr(editing, ...)
+# 在子模块内生效（V3.2 重构后子模块不再单模块共享全局）
+from hailuo_video import editing as _editing_pkg
 
 
-# ---------- Errors / Data ----------
-
-class EditingError(RuntimeError):
-    """editing 后处理调用 / 解析失败。"""
-
+# ---------- Data ----------
 
 @dataclass
 class ColorStats:
@@ -62,60 +58,7 @@ class EditingResult:
         }
 
 
-# ---------- ffmpeg 探测 ----------
-
-def _resolve_ffmpeg_exe() -> str:
-    """imageio-ffmpeg 优先；PATH 兜底（与 concat_engine 一致）。"""
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except ImportError:
-        pass
-    exe = shutil.which("ffmpeg")
-    if not exe:
-        raise EditingError(
-            "未找到 ffmpeg 二进制；先 `pip install imageio-ffmpeg` "
-            "或确保系统 ffmpeg 在 PATH"
-        )
-    return exe
-
-
-# ---------- 注入式 runner（单测可 mock） ----------
-
-# 签名：run_ffmpeg(args_list, timeout) -> (returncode, stdout, stderr)
-RunFFmpegFn = Callable[[list[str], int], tuple[int, str, str]]
-
-
-def _default_runner(args: list[str], timeout: int) -> tuple[int, str, str]:
-    """真网跑 ffmpeg（concat_engine._default_runner 的子集复制，避免循环依赖）。"""
-    try:
-        proc = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise EditingError(f"ffmpeg 子进程失败：{type(exc).__name__}: {exc}") from exc
-    return proc.returncode, proc.stdout, proc.stderr
-
-
-_runner: RunFFmpegFn = _default_runner
-
-
-def set_runner(fn: RunFFmpegFn | None) -> None:
-    """注入 / 还原 runner（单测）。None → 还原 default。"""
-    global _runner
-    _runner = fn if fn is not None else _default_runner
-
-
 # ---------- 工具：从 ffmpeg stderr 提取采样帧 → PIL 算 mean ----------
-
-_STDERR_FRAME_LINE = re.compile(r"frame=\s*(\d+)")
-_STDERR_TIME_LINE = re.compile(r"time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
-
 
 def _ffmpeg_extract_middle_frame(video_path: str | Path, tmp_dir: Path) -> Path:
     """从 video 抽取中间帧到 tmp_dir/mid.png（返回 PNG 路径）。
@@ -124,14 +67,14 @@ def _ffmpeg_extract_middle_frame(video_path: str | Path, tmp_dir: Path) -> Path:
     """
     video = str(video_path)
     # 用 ffprobe 取时长；fallback ffmpeg 默认 5s
-    duration = _probe_duration(video)
+    duration = _editing_pkg._probe_duration(video)
     if duration is None or duration <= 0:
         mid_t = 0.5  # 兜底用 0.5s（5s 默认）
     else:
         mid_t = duration / 2.0
 
     out_png = tmp_dir / "mid.png"
-    exe = _resolve_ffmpeg_exe()
+    exe = _editing_pkg._resolve_ffmpeg_exe()
     args = [
         exe, "-y",
         "-ss", f"{mid_t:.3f}",
@@ -140,31 +83,12 @@ def _ffmpeg_extract_middle_frame(video_path: str | Path, tmp_dir: Path) -> Path:
         "-q:v", "2",
         str(out_png),
     ]
-    rc, _out, err = _runner(args, timeout=30)
+    rc, _out, err = ffmpeg_runner._runner(args, timeout=30)
     if rc != 0:
         raise EditingError(f"extract middle frame 失败 rc={rc}：{err[-300:]}")
     if not out_png.is_file() or out_png.stat().st_size == 0:
         raise EditingError(f"中间帧未生成：{out_png}")
     return out_png
-
-
-def _probe_duration(video_path: str) -> float | None:
-    """用 ffmpeg 直接跑一个空命令取 stderr 里的 Duration 字段（无需 ffprobe）。"""
-    exe = _resolve_ffmpeg_exe()
-    args = [exe, "-i", video_path]
-    try:
-        proc = subprocess.run(
-            args, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    stderr = proc.stderr or ""
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
-    if not m:
-        return None
-    h, mm, s = (float(x) for x in m.groups())
-    return h * 3600 + mm * 60 + s
 
 
 def _compute_color_stats_from_png(png_path: Path) -> ColorStats:
@@ -304,7 +228,7 @@ def normalize_clip(
     in_path = str(video_path)
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    exe = _resolve_ffmpeg_exe()
+    exe = _editing_pkg._resolve_ffmpeg_exe()
     args = [
         exe, "-y",
         "-i", in_path,
@@ -317,7 +241,7 @@ def normalize_clip(
         args.extend(extra_args)
     args.append(str(out_path))
 
-    rc, _out, err = _runner(args, timeout=timeout)
+    rc, _out, err = ffmpeg_runner._runner(args, timeout=timeout)
     if rc != 0:
         raise EditingError(
             f"normalize_clip ffmpeg rc={rc}：{err[-300:]}"
@@ -378,7 +302,7 @@ def color_normalize_pipeline(
 def is_available() -> bool:
     """ffmpeg + PIL 是否齐全（doctor 风格）。"""
     try:
-        _resolve_ffmpeg_exe()
+        _editing_pkg._resolve_ffmpeg_exe()
     except EditingError:
         return False
     try:

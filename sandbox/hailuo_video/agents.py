@@ -32,7 +32,9 @@ from hailuo_video import video_engine as ve_mod
 from hailuo_video import tts_engine as te_mod
 from hailuo_video import concat_engine as ce_mod
 from hailuo_video import quality as q_mod
-from hailuo_video import editing_engine as ed_mod  # V3.2 REQ-303 EditingAgent
+from hailuo_video import editing as ed_mod  # V3.2 REQ-303 EditingAgent (V3.2 重构：editing_engine → editing 包)
+from hailuo_video import motion_backend as mb_mod  # V3.2 重构：从 line 717 移至顶部（R1 imports 集中）
+from hailuo_video.motion_backend import MotionError, MotionResult
 from hailuo_video.script_engine import Script, Storyboard
 
 
@@ -55,6 +57,48 @@ class AgentExecutionError(RuntimeError):
     """Agent.execute() 失败时抛（区别于网络瞬态错误，不重试）。"""
 
 
+# ---------- V3.2 重构：Agent 基类 ----------
+
+class Agent:
+    """所有 Domain Agent 的基类（V3.2 重构：从 frozen-dataclass 改为 ABC）。
+
+    设计动机：
+      - V3.2 之前 9 个 Agent 各自重复 ~40 行模板代码
+        （@dataclass(frozen=True) + 3 Callable fields + __post_init__ + 3 个 _default 方法签名）
+      - 重构后子类只需实现 3 个 _default 方法体
+      - 字段名（name / execute / validate_inputs / idempotency_key）保持不变 → 调用方零改动
+      - 不强制 frozen —— 普通 Python 对象允许 `agent.execute = new_fn` 或
+        `object.__setattr__(agent, "execute", ex)` 直接替换
+        （test_orchestrator_resume.py 6 处依赖此可变性 —— 见 R5 注释）
+
+    字段：
+      - name: 类变量；子类覆写为 Agent 名（"script_writer" / "image_gen" / ...）
+      - execute / validate_inputs / idempotency_key: 实例属性（bound method），由 __init__ 自动绑定
+    """
+    name: str = ""  # 子类覆写为类变量
+
+    def __init__(self) -> None:
+        # 自动绑定 _default_xxx → execute / validate_inputs / idempotency_key
+        # 子类只实现 _default_xxx 方法即可
+        self.execute = self._default_execute
+        self.validate_inputs = self._default_validate
+        self.idempotency_key = self._default_key
+
+    def _default_execute(self, task: dict) -> "AgentResult":
+        raise NotImplementedError(
+            f"{type(self).__name__}._default_execute() not implemented"
+        )
+
+    def _default_validate(self, inputs: dict) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__}._default_validate() not implemented"
+        )
+
+    def _default_key(self, inputs: dict) -> str | None:
+        """默认无缓存（多数 Agent 适用；QA / Editing / MotionGen 都返 None）。"""
+        return None
+
+
 # ---------- AgentResult helpers ----------
 
 def artifact_from_path(path: Path, kind: str, producer: str, metadata: dict | None = None) -> Artifact:
@@ -70,25 +114,23 @@ def artifact_from_path(path: Path, kind: str, producer: str, metadata: dict | No
 
 # ---------- 7 Domain Agents ----------
 
-@dataclass(frozen=True)
-class ScriptWriterAgent:
+class ScriptWriterAgent(Agent):
     """novel text → Storyboard JSON。"""
-    name: str = "script_writer"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "script_writer"
 
     def _default_execute(self, task: dict) -> AgentResult:
         novel = task.get("novel", "")
         if not novel:
             return AgentResult(ok=False, error="novel text empty")
+        # V3.2 自动开发冲刺（轮 5）：注入 backend（默认 minimax，否则 mock）
+        backend = task.get("backend")
+        if backend is None:
+            from hailuo_video import script_engine as _se_mod
+            backend_pref = task.get("backend_prefer", "auto")
+            backend = _se_mod.make_backend(backend_pref)
         try:
-            sb = se_mod.novel_to_storyboard(novel)
+            sb = se_mod.novel_to_storyboard(novel, backend)
             artifacts = [
                 Artifact(
                     artifact_id="storyboard_json",
@@ -110,18 +152,10 @@ class ScriptWriterAgent:
         return hashlib.sha256(inputs.get("novel", "").encode()).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
-class AssetPrepAgent:
+class AssetPrepAgent(Agent):
     """Storyboard → assets/ 17 reference sheets。"""
-    name: str = "asset_prep"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "asset_prep"
 
     def _default_execute(self, task: dict) -> AgentResult:
         sb: Storyboard | None = task.get("storyboard")
@@ -186,18 +220,10 @@ class AssetPrepAgent:
         return hashlib.sha256((sb_json + str(inputs.get("assets_dir", ""))).encode()).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
-class ImageGenAgent:
+class ImageGenAgent(Agent):
     """prompt + subject_references[] → JPG。"""
-    name: str = "image_gen"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "image_gen"
 
     def _default_execute(self, task: dict) -> AgentResult:
         backend = task.get("image_backend")
@@ -206,18 +232,33 @@ class ImageGenAgent:
             return AgentResult(ok=False, error="image_backend missing")
         if not prompt:
             return AgentResult(ok=False, error="prompt empty")
+        # V3.3 P0 修复（2026-10-09）：scene_references（真 24h URL）优先于 subject_references。
+        #   旧行为：subject_references 存的是角色名（"橘猫"），传给 image-01 是字符串，
+        #         image-01 收不到真图锚 → 画风断层（V3 已知问题）。
+        #   新行为：scene_references 非空 → 用作 subject_reference（i2i 多 ref 锚定）；
+        #         scene_references 为空 → 兜底用 subject_references（旧行为，向后兼容）。
+        #   后续 Change B：把 subject_references 也改成 URL list（需先 prep 角色 sheets）。
+        scene_refs = task.get("scene_references") or []
+        if scene_refs:
+            refs_for_backend = scene_refs
+        else:
+            refs_for_backend = task.get("subject_references")
         try:
             results = backend.generate(
                 prompt,
                 aspect_ratio_value=task.get("aspect_ratio", "16:9"),
-                subject_reference=task.get("subject_references"),
+                subject_reference=refs_for_backend,
             )
+            # V3.2 自动开发冲刺（轮 6）：把 bytes 落盘到 intermediate_dir，
+            # artifact.path 用文件路径（之前直接传 bytes 给 compute_content_hash 抛 TypeError）。
             artifacts = []
+            inter_dir = task.get("intermediate_dir")
             for idx, r in enumerate(results):
+                img_path = self._save_image_bytes(r, idx, inter_dir)
                 artifacts.append(Artifact(
                     artifact_id=f"image_{idx}",
                     kind="image",
-                    path=r.bytes if r.bytes else r.image_url,  # placeholder
+                    path=img_path,
                     producer=self.name,
                     metadata={"model": r.model, "duration": r.duration_seconds, "shot_idx": task.get("shot_idx")},
                 ))
@@ -225,31 +266,60 @@ class ImageGenAgent:
         except Exception as exc:
             return AgentResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
+    def _save_image_bytes(self, r, idx, inter_dir) -> Path:
+        """V3.2 自动开发冲刺（轮 6）：把 ImageResult.bytes 落盘成文件。
+
+        V3.2 自动开发冲刺（轮 15 修正）：如果 image_url 是 MiniMax OSS 公网 URL，
+        先下载到 inter_dir 落盘，再返回本地路径。原因是 orchestrator 的 _get_image_path_for_shot
+        只接受本地路径（URL 不满足 Path.exists()），导致 motion_gen image_path 为空 → Hailuo 不调用。
+
+        V3.2 自动开发冲刺（轮 15 修正 2）：inter_dir 是 Linux-style 路径（/tmp/...）
+        时，Windows Python 会建到 cwd 下相对路径——但 artifact.path 仍存 Linux-style，
+        导致 Path.exists() 返 False。用 .resolve() 强转绝对 Windows 路径。
+        """
+        from pathlib import Path as _P
+        out_dir = _P(inter_dir).resolve() if inter_dir else _P("./intermediate").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ext = ".jpg" if "jpeg" in (r.mime_type or "jpeg") else ".png"
+        out_path = (out_dir / f"image_{idx:03d}{ext}").resolve()
+
+        # 优先 image_url（MiniMax OSS 公网 URL）→ 下载到 inter_dir
+        url_val = getattr(r, "image_url", None)
+        if url_val:
+            url = url_val[0] if isinstance(url_val, list) and url_val else url_val
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                try:
+                    import urllib.request
+                    urllib.request.urlretrieve(url, str(out_path))
+                    if out_path.is_file() and out_path.stat().st_size > 1000:
+                        return str(out_path)
+                except Exception:
+                    pass  # 下载失败 → 落 fallback to bytes
+        # 回退：写 r.bytes 到 inter_dir
+        if not r.bytes:
+            raise ValueError(f"ImageResult #{idx} 既无 image_url 也无 bytes")
+        out_path.write_bytes(r.bytes)
+        return str(out_path)
+
     def _default_validate(self, inputs: dict):
         if not inputs.get("prompt", "").strip():
             raise InputValidationError("ImageGenAgent requires 'prompt' input")
 
     def _default_key(self, inputs: dict) -> str | None:
+        # V3.3：idempotency_key 包含 scene_references，避免缓存误命中
         key_parts = [
             inputs.get("prompt", ""),
+            str(inputs.get("scene_references", [])),
             str(inputs.get("subject_references", [])),
             inputs.get("aspect_ratio", ""),
         ]
         return hashlib.sha256("|".join(key_parts).encode()).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
-class VideoSynthAgent:
+class VideoSynthAgent(Agent):
     """JPG → MP4（Ken Burns ffmpeg zoompan）。"""
-    name: str = "video_synth"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "video_synth"
 
     def _default_execute(self, task: dict) -> AgentResult:
         video_backend = task.get("video_backend")
@@ -289,18 +359,10 @@ class VideoSynthAgent:
         ).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
-class TTSAgent:
+class TTSAgent(Agent):
     """text → MP3 + VTT。"""
-    name: str = "tts"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "tts"
 
     def _default_execute(self, task: dict) -> AgentResult:
         tts_backend = task.get("tts_backend")
@@ -348,18 +410,10 @@ class TTSAgent:
         ).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
-class ConcatAgent:
+class ConcatAgent(Agent):
     """per-shot mp4+mp3+vtt → final.mp4。"""
-    name: str = "concat"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "concat"
 
     def _default_execute(self, task: dict) -> AgentResult:
         shots = task.get("shots", [])
@@ -405,96 +459,207 @@ class ConcatAgent:
         return hashlib.sha256(str(inputs.get("shots", "")).encode()).hexdigest()[:16]
 
 
-@dataclass(frozen=True)
-class QAAgent:
-    """post-flight color consistency 检查。"""
-    name: str = "qa"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
+class QAAgent(Agent):
+    """post-flight 一致性检查（color + face）。
 
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    输入 task 字段：
+      - image_paths: list[str | Path] —— 必填，至少 2 张才能算一致性
+      - mode: str = "color"  —— 检查模式
+          "color"    → 仅色彩一致性（V2.6 原有）
+          "face"     → 仅面部相似度（REQ-402）
+          "combined" → 色彩 + 面部
+      - face_threshold: float = 0.85 —— face mode 阈值
+      - face_backend: str = "hash" —— "hash" | "null" | "face_recognition"
+    """
+
+    name = "qa"
 
     def _default_execute(self, task: dict) -> AgentResult:
         image_paths = task.get("image_paths", [])
+        mode = task.get("mode", "color")
+        metadata: dict = {"mode": mode, "image_count": len(image_paths)}
+
         if not image_paths:
             return AgentResult(ok=True, metadata={"skipped": True, "reason": "no image_paths"})
+
         try:
-            report = q_mod.compute_color_consistency([Path(p) for p in image_paths])
+            if mode in ("color", "combined"):
+                report = q_mod.compute_color_consistency([Path(p) for p in image_paths])
+                metadata["color_report"] = report.to_dict() if hasattr(report, "to_dict") else str(report)
+                metadata["mean_similarity"] = getattr(report, "mean_similarity", 1.0)
+                metadata["min_similarity"] = getattr(report, "min_similarity", 1.0)
+                metadata["color_ok"] = getattr(report, "ok", True)
+            if mode in ("face", "combined"):
+                backend_name = task.get("face_backend", "hash")
+                backend = _make_face_backend(backend_name)
+                face_report = q_mod.compute_face_consistency(
+                    [Path(p) for p in image_paths],
+                    threshold=task.get("face_threshold", 0.85),
+                    backend=backend,
+                )
+                metadata["face_report"] = face_report.to_dict()
+                metadata["face_mean_similarity"] = face_report.mean_similarity
+                metadata["face_min_similarity"] = face_report.min_similarity
+                metadata["face_ok"] = face_report.ok
+            ok = metadata.get("color_ok", True) and metadata.get("face_ok", True)
             return AgentResult(
-                ok=report.ok,
+                ok=ok,
                 artifacts=[],
-                metadata={
-                    "consistency_report": report,
-                    "mean_similarity": report.mean_similarity,
-                    "min_similarity": report.min_similarity,
-                    "warnings": report.warnings,
-                },
+                metadata=metadata,
             )
         except Exception as exc:
             return AgentResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
     def _default_validate(self, inputs: dict):
         # image_paths 可选（空跳过），无需必填校验
-        pass
+        mode = inputs.get("mode", "color")
+        if mode not in ("color", "face", "combined"):
+            raise InputValidationError(
+                f"QAAgent unknown mode={mode!r}（允许 color/face/combined）"
+            )
+        backend = inputs.get("face_backend", "hash")
+        if mode in ("face", "combined") and backend not in ("hash", "null", "face_recognition"):
+            raise InputValidationError(
+                f"QAAgent unknown face_backend={backend!r}（允许 hash/null/face_recognition）"
+            )
 
     def _default_key(self, inputs: dict) -> str | None:
         # QA 无副作用，无需 cache
         return None
 
 
+def _make_face_backend(name: str):
+    """内部辅助：根据 name 选 face backend。"""
+    if name == "hash":
+        return q_mod.HashFaceSimilarityBackend()
+    if name == "null":
+        return q_mod.NullFaceSimilarityBackend()
+    if name == "face_recognition":
+        return q_mod.RealFaceRecognitionBackend()
+    raise InputValidationError(f"unknown face backend: {name!r}")
+
+
 # ---------- V3.2 REQ-303 EditingAgent ----------
 
-@dataclass(frozen=True)
-class EditingAgent:
-    """V3.2 REQ-303：后期处理（色彩归一化先行）。
+class EditingAgent(Agent):
+    """V3.2 REQ-303：后期处理。
 
     输入 task 字段：
       - video_paths: list[str | Path]  —— 必填，至少 1 段
-      - output_dir: str | Path         —— 必填，归一化产物目录
-      - timeout: int = 180             —— 可选，per-clip ffmpeg timeout
+      - output_path: str | Path        —— 必填（mode=full 时），最终产物路径
+      - output_dir: str | Path         —— 必填（mode=color_normalize 时），归一化产物目录
+      - mode: str = "color_normalize"  —— 子功能选择
+          "color_normalize" → 色彩归一化（默认）
+          "crossfade"       → 仅叠化
+          "motion_match"    → 仅算运动峰值
+          "apply_lut"       → 仅 LUT
+          "full"            → 完整管线（color_normalize → motion_match → crossfade → LUT）
+      - lut_path: str | Path | None    —— mode=apply_lut 或 full 时可选
+      - transition: str = "fade"       —— mode 含 crossfade 时使用
+      - overlap_seconds: float = 0.25  —— mode 含 crossfade 时使用
     """
 
-    name: str = "editing"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
-
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "editing"
 
     def _default_execute(self, task: dict) -> AgentResult:
+        mode = task.get("mode", "color_normalize")
         try:
-            results = ed_mod.color_normalize_pipeline(
-                video_paths=task["video_paths"],
-                output_dir=task["output_dir"],
-                timeout=task.get("timeout", 180),
-            )
             from hailuo_video.artifact import Artifact
-            artifacts = [
-                Artifact(
-                    artifact_id=f"editing_{i:04d}",
-                    kind="video",
-                    path=r.output_path,
-                    producer=self.name,
-                    metadata=r.to_dict(),
+            if mode == "color_normalize":
+                results = ed_mod.color_normalize_pipeline(
+                    video_paths=task["video_paths"],
+                    output_dir=task["output_dir"],
+                    timeout=task.get("timeout", 180),
                 )
-                for i, r in enumerate(results)
-            ]
-            return AgentResult(
-                ok=True,
-                artifacts=artifacts,
-                metadata={
-                    "clip_count": len(results),
-                    "eq_filters": [r.eq_filter for r in results],
-                    "target_stats": results[0].target_stats.to_dict() if results else {},
-                },
-            )
+                artifacts = [
+                    Artifact(
+                        artifact_id=f"editing_{i:04d}",
+                        kind="video",
+                        path=r.output_path,
+                        producer=self.name,
+                        metadata=r.to_dict(),
+                    )
+                    for i, r in enumerate(results)
+                ]
+                return AgentResult(
+                    ok=True,
+                    artifacts=artifacts,
+                    metadata={
+                        "mode": mode,
+                        "clip_count": len(results),
+                        "eq_filters": [r.eq_filter for r in results],
+                        "target_stats": results[0].target_stats.to_dict() if results else {},
+                    },
+                )
+            elif mode == "crossfade":
+                result = ed_mod.crossfade_clips(
+                    video_paths=task["video_paths"],
+                    output_path=task["output_path"],
+                    transition=task.get("transition", "fade"),
+                    overlap_seconds=task.get("overlap_seconds", 0.25),
+                )
+                return AgentResult(
+                    ok=True,
+                    artifacts=[Artifact(
+                        artifact_id="editing_crossfade",
+                        kind="video",
+                        path=result.output_path,
+                        producer=self.name,
+                        metadata=result.to_dict(),
+                    )],
+                    metadata={"mode": mode, **result.to_dict()},
+                )
+            elif mode == "motion_match":
+                peaks = ed_mod.motion_match_cut_points(
+                    video_paths=task["video_paths"],
+                    sample_count=task.get("sample_count", 8),
+                )
+                return AgentResult(
+                    ok=True,
+                    artifacts=[],
+                    metadata={
+                        "mode": mode,
+                        "motion_peaks": [m.to_dict() for m in peaks],
+                    },
+                )
+            elif mode == "apply_lut":
+                result = ed_mod.apply_lut(
+                    video_path=task["video_path"],
+                    output_path=task["output_path"],
+                    lut_path=task["lut_path"],
+                )
+                return AgentResult(
+                    ok=True,
+                    artifacts=[Artifact(
+                        artifact_id="editing_lut",
+                        kind="video",
+                        path=result.output_path,
+                        producer=self.name,
+                        metadata=result.to_dict(),
+                    )],
+                    metadata={"mode": mode, **result.to_dict()},
+                )
+            elif mode == "full":
+                result = ed_mod.full_editing_pipeline(
+                    video_paths=task["video_paths"],
+                    output_path=task["output_path"],
+                    lut_path=task.get("lut_path"),
+                    transition=task.get("transition", "fade"),
+                    overlap_seconds=task.get("overlap_seconds", 0.25),
+                )
+                return AgentResult(
+                    ok=True,
+                    artifacts=[Artifact(
+                        artifact_id="editing_full",
+                        kind="video",
+                        path=result.final_path,
+                        producer=self.name,
+                        metadata=result.to_dict(),
+                    )],
+                    metadata={"mode": mode, **result.to_dict()},
+                )
+            else:
+                return AgentResult(ok=False, error=f"EditingAgent unknown mode={mode!r}")
         except ed_mod.EditingError as exc:
             return AgentResult(ok=False, error=f"editing fail：{exc}")
         except Exception as exc:
@@ -504,33 +669,36 @@ class EditingAgent:
         vps = inputs.get("video_paths")
         if not vps or not isinstance(vps, list):
             raise InputValidationError("EditingAgent requires 'video_paths' (non-empty list)")
-        if not inputs.get("output_dir"):
-            raise InputValidationError("EditingAgent requires 'output_dir'")
+        mode = inputs.get("mode", "color_normalize")
+        if mode == "color_normalize":
+            if not inputs.get("output_dir"):
+                raise InputValidationError("EditingAgent(mode=color_normalize) requires 'output_dir'")
+        elif mode == "crossfade":
+            if not inputs.get("output_path"):
+                raise InputValidationError("EditingAgent(mode=crossfade) requires 'output_path'")
+        elif mode == "apply_lut":
+            for k in ("video_path", "output_path", "lut_path"):
+                if not inputs.get(k):
+                    raise InputValidationError(f"EditingAgent(mode=apply_lut) requires '{k}'")
+        elif mode == "full":
+            if not inputs.get("output_path"):
+                raise InputValidationError("EditingAgent(mode=full) requires 'output_path'")
+        elif mode == "motion_match":
+            pass  # video_paths 已校验
+        else:
+            raise InputValidationError(f"EditingAgent unknown mode={mode!r}")
 
     def _default_key(self, inputs: dict) -> str | None:
         # 归一化不依赖外部 API，但 ffmpeg 重编码有时间成本 → 不缓存
         return None
 
 
-from hailuo_video import motion_backend as mb_mod
-from hailuo_video.motion_backend import MotionError, MotionResult
-
-
 # ---------- V3.1 MotionGenerationAgent ----------
 
-@dataclass(frozen=True)
-class MotionGenerationAgent:
+class MotionGenerationAgent(Agent):
     """V3.1：真 AI 视频生成（Hailuo-2.3）。"""
 
-    name: str = "motion_gen"
-    execute: Callable[..., AgentResult] = field(default=None)
-    validate_inputs: Callable[[dict], None] = field(default=None)
-    idempotency_key: Callable[[dict], str | None] = field(default=None)
-
-    def __post_init__(self):
-        object.__setattr__(self, "execute", self._default_execute)
-        object.__setattr__(self, "validate_inputs", self._default_validate)
-        object.__setattr__(self, "idempotency_key", self._default_key)
+    name = "motion_gen"
 
     def _default_execute(self, task: dict) -> AgentResult:
         try:

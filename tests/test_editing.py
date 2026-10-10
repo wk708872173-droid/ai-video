@@ -19,9 +19,12 @@ import pytest
 SANDBOX = Path(__file__).resolve().parents[1] / "sandbox"
 if str(SANDBOX) not in sys.path:
     sys.path.insert(0, str(SANDBOX))
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
 
-from hailuo_video import editing_engine as ed_mod  # noqa: E402
-from hailuo_video.editing_engine import (  # noqa: E402
+from hailuo_video import editing as ed_mod  # noqa: E402  # V3.2 重构：editing_engine → editing 包
+from hailuo_video.editing import (  # noqa: E402  # V3.2 重构：editing_engine → editing 包
     ColorStats,
     EditingError,
     EditingResult,
@@ -37,23 +40,8 @@ from hailuo_video.agents import EditingAgent, InputValidationError  # noqa: E402
 
 
 # ---------- 测试辅助：造一张最小 PNG ----------
-
-def _make_min_png(path: Path, width: int = 16, height: int = 16,
-                   rgb: tuple[int, int, int] = (128, 128, 128)) -> None:
-    """生成一张固定颜色 RGB PNG（避免 Pillow 依赖）。"""
-    r, g, b = rgb
-    # IHDR
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(tag + data) & 0xffffffff
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
-
-    sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit RGB
-    # IDAT - 每行 0 滤镜字节 + RGB triple
-    row = b"\x00" + (struct.pack(">BBB", r, g, b) * width)
-    raw = row * height
-    idat = zlib.compress(raw, 9)
-    path.write_bytes(sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
+# V3.2 自动开发冲刺（轮 5）：_make_min_png 提取到 tests/_png_utils.py
+from _png_utils import make_min_png as _make_min_png  # noqa: E402,F401
 
 
 # ---------- 测试辅助：注入 runner，伪造 ffmpeg 行为 ----------
@@ -272,3 +260,477 @@ def test_editing_agent_execute_empty_video_paths_returns_error(fake_runner):
     result = a.execute({"video_paths": [], "output_dir": "/tmp/out"})
     assert result.ok is False
     assert "video_paths 为空" in result.error
+
+
+# ============================================================
+# V3.2 REQ-303.b — xfade 重叠帧叠化
+# ============================================================
+
+from hailuo_video.editing import (  # noqa: E402  # V3.2 重构：editing_engine → editing 包
+    CrossfadeResult,
+    LUTResult,
+    MotionPeak,
+    FullEditingResult,
+    _xfade_filter_chain,
+    _probe_dimensions,
+    crossfade_clips,
+    apply_lut,
+    write_neutral_cube_lut,
+    find_motion_peak,
+    motion_match_cut_points,
+    full_editing_pipeline,
+    VALID_XFADE_TRANSITIONS,
+)
+
+
+def test_xfade_filter_chain_basic():
+    """3 段 5s，0.25s overlap，fade transition → 2 段 xfade 节点。"""
+    chain = _xfade_filter_chain(
+        clip_count=3,
+        durations=[5.0, 5.0, 5.0],
+        transition="fade",
+        overlap=0.25,
+    )
+    parts = chain.split(";")
+    assert len(parts) == 2
+    assert "xfade=transition=fade" in parts[0]
+    assert "xfade=transition=fade" in parts[1]
+    # 第二段的 offset 应该是 5+5-0.25-0.25 = 9.5（中间段累加）
+    assert "offset=4.750" in parts[0]
+    assert "offset=9.500" in parts[1]
+
+
+def test_xfade_filter_chain_too_few_clips_raises():
+    with pytest.raises(EditingError, match="至少需要 2 段"):
+        _xfade_filter_chain(clip_count=1, durations=[5.0], transition="fade", overlap=0.25)
+
+
+def test_xfade_filter_chain_invalid_transition_raises():
+    with pytest.raises(EditingError, match="非法 xfade transition"):
+        _xfade_filter_chain(
+            clip_count=2, durations=[5.0, 5.0],
+            transition="nonexistent", overlap=0.25,
+        )
+
+
+def test_xfade_filter_chain_overlap_out_of_range_raises():
+    with pytest.raises(EditingError, match="overlap 越界"):
+        _xfade_filter_chain(
+            clip_count=2, durations=[5.0, 5.0],
+            transition="fade", overlap=3.0,  # > 2.0
+        )
+    with pytest.raises(EditingError, match="overlap 越界"):
+        _xfade_filter_chain(
+            clip_count=2, durations=[5.0, 5.0],
+            transition="fade", overlap=0.01,  # < 0.05
+        )
+
+
+def test_crossfade_clips_too_few_raises(tmp_path):
+    with pytest.raises(EditingError, match="至少 2 段"):
+        crossfade_clips(
+            [str(tmp_path / "a.mp4")],
+            str(tmp_path / "out.mp4"),
+        )
+
+
+def test_crossfade_clips_success(fake_runner, tmp_path, monkeypatch):
+    """2 段视频叠化：runner 写假 mp4 占位 + monkeypatch _probe_duration/dimensions。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda p: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda p: (1920, 1080))
+
+    v1 = tmp_path / "a.mp4"
+    v2 = tmp_path / "b.mp4"
+    v1.write_bytes(b"x" * 100)
+    v2.write_bytes(b"x" * 100)
+    out = tmp_path / "out.mp4"
+
+    result = crossfade_clips(
+        [str(v1), str(v2)],
+        str(out),
+        transition="fade",
+        overlap_seconds=0.25,
+    )
+    assert isinstance(result, CrossfadeResult)
+    assert result.clip_count == 2
+    assert result.transition == "fade"
+    assert result.overlap_seconds == 0.25
+    assert out.is_file()
+    assert out.stat().st_size > 0
+    # ffmpeg 命令应包含 -filter_complex 和 xfade=
+    ffmpeg_args = fake_runner.calls[0]
+    assert any("-filter_complex" in str(a) for a in ffmpeg_args)
+    assert any("xfade=transition=fade" in str(a) for a in ffmpeg_args)
+
+
+def test_crossfade_clips_three_clips(fake_runner, tmp_path, monkeypatch):
+    """3 段视频叠化。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda p: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda p: (1920, 1080))
+
+    vs = [tmp_path / f"v{i}.mp4" for i in range(3)]
+    for v in vs:
+        v.write_bytes(b"x" * 50)
+    out = tmp_path / "out3.mp4"
+
+    result = crossfade_clips([str(v) for v in vs], str(out), transition="wipeleft", overlap_seconds=0.5)
+    assert result.clip_count == 3
+    assert result.transition == "wipeleft"
+
+
+def test_crossfade_clips_ffmpeg_fail_raises(fake_runner, tmp_path, monkeypatch):
+    """ffmpeg rc != 0 → EditingError。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda p: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda p: (1920, 1080))
+
+    fake_runner.fail_norm = "fake ffmpeg failure"
+    v1 = tmp_path / "a.mp4"
+    v2 = tmp_path / "b.mp4"
+    v1.write_bytes(b"x" * 50)
+    v2.write_bytes(b"x" * 50)
+    with pytest.raises(EditingError, match="crossfade ffmpeg rc=1"):
+        crossfade_clips([str(v1), str(v2)], str(tmp_path / "out.mp4"))
+
+
+def test_valid_xfade_transitions_not_empty():
+    """VALID_XFADE_TRANSITIONS 是非空 tuple。"""
+    assert isinstance(VALID_XFADE_TRANSITIONS, tuple)
+    assert len(VALID_XFADE_TRANSITIONS) >= 40
+    assert "fade" in VALID_XFADE_TRANSITIONS
+    assert "wipeleft" in VALID_XFADE_TRANSITIONS
+
+
+# ============================================================
+# V3.2 REQ-303.c — 运动匹配剪切
+# ============================================================
+
+def test_motion_peak_video_missing_raises(tmp_path):
+    with pytest.raises(EditingError, match="无法探测时长"):
+        find_motion_peak(tmp_path / "nonexistent.mp4")
+
+
+def test_motion_peak_too_few_samples_raises(tmp_path):
+    """sample_count < 3 → EditingError。"""
+    p = tmp_path / "x.mp4"
+    p.write_bytes(b"x")
+    with pytest.raises(EditingError, match="sample_count 至少 3"):
+        find_motion_peak(p, sample_count=2)
+
+
+def test_motion_peak_probe_failure_raises(tmp_path, monkeypatch):
+    """_probe_duration 返 None → EditingError '无法探测时长'。"""
+    p = tmp_path / "x.mp4"
+    p.write_bytes(b"x")
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: None)
+    with pytest.raises(EditingError, match="无法探测时长"):
+        find_motion_peak(p, sample_count=4)
+
+
+def test_motion_peak_success(fake_runner, tmp_path):
+    """3 帧采样 → 找 diff 最大的一对。"""
+    p = tmp_path / "v.mp4"
+    p.write_bytes(b"x")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: 10.0)
+    # _extract_frame_at 走 runner → 写 PNG → _frame_diff_score 算像素差异
+    peak = find_motion_peak(p, sample_count=4, search_window=(0.1, 0.9))
+    monkeypatch.undo()
+
+    assert isinstance(peak, MotionPeak)
+    assert peak.video_path == str(p)
+    assert 0 < peak.peak_time_seconds < 10.0
+    assert 0.0 <= peak.diff_score <= 1.0
+
+
+def test_motion_match_cut_points_returns_one_per_video(fake_runner, tmp_path):
+    """返回 list[MotionPeak] 与 video_paths 等长。"""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda p: (640, 480))
+
+    vs = [tmp_path / f"v{i}.mp4" for i in range(3)]
+    for v in vs:
+        v.write_bytes(b"x")
+    peaks = motion_match_cut_points([str(v) for v in vs], sample_count=4)
+    monkeypatch.undo()
+
+    assert len(peaks) == 3
+    assert all(isinstance(p, MotionPeak) for p in peaks)
+
+
+def test_motion_match_cut_points_empty_raises():
+    with pytest.raises(EditingError, match="video_paths 为空"):
+        motion_match_cut_points([])
+
+
+def test_frame_diff_score_identical_is_zero(tmp_path):
+    """两张相同 PNG → diff_score == 0。"""
+    from PIL import Image
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    _make_min_png(a, rgb=(128, 128, 128))
+    _make_min_png(b, rgb=(128, 128, 128))
+    score = ed_mod._frame_diff_score(a, b)
+    assert score == 0.0
+
+
+def test_frame_diff_score_different_is_positive(tmp_path):
+    """两张不同色 PNG → diff_score > 0。"""
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    _make_min_png(a, rgb=(10, 10, 10))
+    _make_min_png(b, rgb=(200, 200, 200))
+    score = ed_mod._frame_diff_score(a, b)
+    assert score > 0.0
+
+
+# ============================================================
+# V3.2 REQ-303.d — LUT 调色
+# ============================================================
+
+def test_write_neutral_cube_lut_creates_file(tmp_path):
+    out = tmp_path / "neutral.cube"
+    p = write_neutral_cube_lut(out, title="test", size=4)
+    assert p == out
+    assert out.is_file()
+    content = out.read_text(encoding="utf-8")
+    assert 'TITLE "test"' in content
+    assert "LUT_3D_SIZE 4" in content
+    # 4x4x4 = 64 个 RGB 三元组
+    data_lines = [
+        line for line in content.split("\n")
+        if line and not line.startswith(("TITLE", "LUT_3D_SIZE", "DOMAIN_"))
+    ]
+    assert len(data_lines) == 64
+
+
+def test_write_neutral_cube_lut_identity_values(tmp_path):
+    """neutral cube 应是 identity（R=G=B 对角线）。"""
+    out = tmp_path / "neutral.cube"
+    write_neutral_cube_lut(out, size=4)
+    lines = [
+        line for line in out.read_text(encoding="utf-8").split("\n")
+        if line and not line.startswith(("TITLE", "LUT_3D_SIZE", "DOMAIN_"))
+    ]
+    # 第一行应是 (0, 0, 0)，最后一行应是 (1, 1, 1)
+    assert lines[0] == "0.000000 0.000000 0.000000"
+    assert lines[-1] == "1.000000 1.000000 1.000000"
+
+
+def test_apply_lut_missing_video_raises(tmp_path):
+    cube = tmp_path / "n.cube"
+    write_neutral_cube_lut(cube)
+    with pytest.raises(EditingError, match="video 不存在"):
+        apply_lut(tmp_path / "x.mp4", tmp_path / "out.mp4", cube)
+
+
+def test_apply_lut_missing_lut_raises(tmp_path):
+    v = tmp_path / "v.mp4"
+    v.write_bytes(b"x")
+    with pytest.raises(EditingError, match="LUT 不存在"):
+        apply_lut(v, tmp_path / "out.mp4", tmp_path / "nope.cube")
+
+
+def test_apply_lut_success(fake_runner, tmp_path):
+    cube = tmp_path / "n.cube"
+    write_neutral_cube_lut(cube)
+    v = tmp_path / "v.mp4"
+    v.write_bytes(b"x")
+    out = tmp_path / "out.mp4"
+
+    result = apply_lut(v, out, cube)
+    assert isinstance(result, LUTResult)
+    assert result.lut_path == str(cube)
+    assert out.is_file()
+    # 检查 runner 收到了 lut3d= filter
+    last_args = fake_runner.calls[-1]
+    assert any("lut3d=" in str(a) for a in last_args)
+
+
+# ============================================================
+# V3.2 REQ-303 — 完整后期管线（full pipeline）
+# ============================================================
+
+def test_full_editing_pipeline_empty_raises():
+    with pytest.raises(EditingError, match="video_paths 为空"):
+        full_editing_pipeline([], "/tmp/out.mp4")
+
+
+def test_full_editing_pipeline_single_clip(fake_runner, tmp_path, monkeypatch):
+    """单段视频 → color_normalize → motion_match → crossfade（仅 1 段也跑通，output = copy）。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda _: (1920, 1080))
+    monkeypatch.setattr(ed_mod, "color_normalize_pipeline",
+                        lambda video_paths, output_dir, **_kw: [
+                            ed_mod.EditingResult(output_path=str(Path(output_dir) / f"normalized_{i:04d}.mp4"))
+                            for i in range(len(video_paths))
+                        ])
+    # 在 color_normalize_pipeline 输出位置写假文件供 crossfade 链使用
+    real_pipeline = ed_mod.color_normalize_pipeline
+
+    def fake_pipeline(video_paths, output_dir, **_kw):
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = []
+        for i, vp in enumerate(video_paths):
+            target = out_dir / f"normalized_{i:04d}.mp4"
+            target.write_bytes(b"\x00\x00\x00\x18ftyp mp42 fake")
+            results.append(ed_mod.EditingResult(output_path=str(target), source_path=str(vp)))
+        return results
+
+    monkeypatch.setattr(ed_mod, "color_normalize_pipeline", fake_pipeline)
+
+    v = tmp_path / "v.mp4"
+    v.write_bytes(b"x")
+    out = tmp_path / "final.mp4"
+
+    result = full_editing_pipeline([str(v)], str(out), lut_path=None)
+    assert isinstance(result, FullEditingResult)
+    assert result.final_path == str(out)
+    assert Path(out).is_file()
+    assert len(result.motion_peaks) == 1
+
+
+def test_full_editing_pipeline_with_lut(fake_runner, tmp_path, monkeypatch):
+    """完整管线 + LUT：2 段视频 → crossfade → apply_lut。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda _: (1920, 1080))
+
+    crossfade_called: dict = {"called": 0}
+
+    def fake_crossfade(video_paths, output_path, **_kw):
+        crossfade_called["called"] += 1
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"\x00\x00\x00\x18ftyp mp42 fake")
+        return ed_mod.CrossfadeResult(output_path=str(output_path), source_paths=[str(p) for p in video_paths])
+
+    monkeypatch.setattr(ed_mod, "crossfade_clips", fake_crossfade)
+
+    v1 = tmp_path / "v1.mp4"
+    v2 = tmp_path / "v2.mp4"
+    v1.write_bytes(b"x")
+    v2.write_bytes(b"x")
+    cube = tmp_path / "n.cube"
+    write_neutral_cube_lut(cube)
+    out = tmp_path / "final.mp4"
+
+    result = full_editing_pipeline(
+        [str(v1), str(v2)], str(out),
+        lut_path=str(cube), work_dir=tmp_path / "work",
+    )
+    assert crossfade_called["called"] == 1
+    assert result.lut is not None
+    assert result.lut.lut_path == str(cube)
+    assert out.is_file()
+
+
+# ============================================================
+# V3.2 REQ-303 — EditingAgent 新 mode 覆盖
+# ============================================================
+
+def test_editing_agent_validate_crossfade_mode():
+    a = EditingAgent()
+    with pytest.raises(InputValidationError, match="mode=crossfade.*output_path"):
+        a.validate_inputs({"mode": "crossfade", "video_paths": ["/tmp/a.mp4"]})
+    # OK 路径不应抛
+    a.validate_inputs({
+        "mode": "crossfade",
+        "video_paths": ["/tmp/a.mp4"],
+        "output_path": "/tmp/out.mp4",
+    })
+
+
+def test_editing_agent_validate_apply_lut_mode():
+    a = EditingAgent()
+    a.validate_inputs({
+        "mode": "apply_lut",
+        "video_paths": ["/tmp/a.mp4"],
+        "video_path": "/tmp/a.mp4",
+        "output_path": "/tmp/out.mp4",
+        "lut_path": "/tmp/lut.cube",
+    })
+    with pytest.raises(InputValidationError, match="mode=apply_lut.*lut_path"):
+        a.validate_inputs({
+            "mode": "apply_lut",
+            "video_paths": ["/tmp/a.mp4"],
+            "video_path": "/tmp/a.mp4",
+            "output_path": "/tmp/out.mp4",
+        })
+
+
+def test_editing_agent_validate_full_mode():
+    a = EditingAgent()
+    a.validate_inputs({
+        "mode": "full",
+        "video_paths": ["/tmp/a.mp4"],
+        "output_path": "/tmp/out.mp4",
+    })
+    with pytest.raises(InputValidationError, match="mode=full.*output_path"):
+        a.validate_inputs({"mode": "full", "video_paths": ["/tmp/a.mp4"]})
+
+
+def test_editing_agent_validate_unknown_mode_raises():
+    a = EditingAgent()
+    with pytest.raises(InputValidationError, match="unknown mode"):
+        a.validate_inputs({
+            "mode": "bogus",
+            "video_paths": ["/tmp/a.mp4"],
+            "output_path": "/tmp/out.mp4",
+        })
+
+
+def test_editing_agent_execute_crossfade_mode(fake_runner, tmp_path, monkeypatch):
+    """mode=crossfade → 走 crossfade_clips。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: 5.0)
+    monkeypatch.setattr(ed_mod, "_probe_dimensions", lambda _: (1920, 1080))
+
+    v1 = tmp_path / "a.mp4"
+    v2 = tmp_path / "b.mp4"
+    v1.write_bytes(b"x")
+    v2.write_bytes(b"x")
+    out = tmp_path / "out.mp4"
+
+    a = EditingAgent()
+    result = a.execute({
+        "mode": "crossfade",
+        "video_paths": [str(v1), str(v2)],
+        "output_path": str(out),
+        "transition": "wipeleft",
+        "overlap_seconds": 0.3,
+    })
+    assert result.ok is True
+    assert result.metadata["mode"] == "crossfade"
+    assert result.metadata["transition"] == "wipeleft"
+    assert result.metadata["overlap_seconds"] == 0.3
+    assert len(result.artifacts) == 1
+
+
+def test_editing_agent_execute_motion_match_mode(fake_runner, tmp_path, monkeypatch):
+    """mode=motion_match → 走 motion_match_cut_points。"""
+    monkeypatch.setattr(ed_mod, "_probe_duration", lambda _: 5.0)
+
+    v = tmp_path / "a.mp4"
+    v.write_bytes(b"x")
+
+    a = EditingAgent()
+    result = a.execute({
+        "mode": "motion_match",
+        "video_paths": [str(v)],
+        "sample_count": 4,
+    })
+    assert result.ok is True
+    assert result.metadata["mode"] == "motion_match"
+    assert "motion_peaks" in result.metadata
+    assert len(result.metadata["motion_peaks"]) == 1
+
+
+def test_editing_agent_execute_unknown_mode_returns_error(fake_runner, tmp_path):
+    a = EditingAgent()
+    result = a.execute({
+        "mode": "bogus",
+        "video_paths": ["/tmp/a.mp4"],
+        "output_path": "/tmp/out.mp4",
+    })
+    assert result.ok is False
+    assert "unknown mode" in result.error
