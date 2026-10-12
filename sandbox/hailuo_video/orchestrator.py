@@ -336,7 +336,9 @@ class PipelineAgent:
         sb = ctx["storyboard"]
         shot = sb.shots[shot_idx] if shot_idx < len(sb.shots) else None
         # V3.2 自动开发冲刺（轮 7）：style_anchor 是风格基线（写实/电影/纪实等）
-        style_anchor = (getattr(sb, "style_anchor", "") or "").strip()
+        # V3.4 ADR-006：空值兜底为写实系（不再放任 prompt 无 anti-cartoon 守卫）
+        from hailuo_video.asset_prep import _safe_style_anchor
+        style_anchor = _safe_style_anchor(getattr(sb, "style_anchor", "") or "")
 
         # 基础字段（所有 agent 都看到）
         task: dict = {
@@ -372,9 +374,9 @@ class PipelineAgent:
         if agent_name == "image_gen":
             # 70/30 提示法拼接：style_anchor + description + [shot_type] + [运镜] + [动作] + [氛围]
             # V3.2 自动开发冲刺（轮 7）：style_anchor 必须放在最前（基线优先级）
+            # V3.4 ADR-006：style_anchor 已由 _safe_style_anchor 兜底为非空 + 含守卫词
             prompt_parts = []
-            if style_anchor:
-                prompt_parts.append(f"[风格:{style_anchor}]")
+            prompt_parts.append(f"[风格:{style_anchor}]")
             prompt_parts.append(description)
             camera_motion = getattr(shot, "camera_motion", "") or ""
             subject_action = getattr(shot, "subject_action", "") or ""
@@ -408,11 +410,9 @@ class PipelineAgent:
             #   旧版 `f"{base_subject_action}, 风格:{style_anchor}"` 把风格当尾缀，
             #   Hailuo 可能把后半部分当附加修饰忽略 → 视频风格漂移。
             #   新版 `[风格:{style_anchor}] {base_subject_action}` 把风格放最前。
+            # V3.4 ADR-006：style_anchor 已 _safe_style_anchor 兜底（非空），无需 if/else 分支
             base_subject_action = getattr(shot, "subject_action", "") or description
-            if style_anchor:
-                task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"
-            else:
-                task["subject_action"] = base_subject_action
+            task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"
             task["style_anchor"] = style_anchor       # 也单独传，方便后端读取
             # Shot dataclass 用 expected_duration；motion_gen backend 接收 duration
             task["duration"] = int(getattr(shot, "expected_duration", 6.0) or 6.0)

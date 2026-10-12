@@ -323,11 +323,13 @@ def run_pipeline(
         t0 = time.monotonic()
         try:
             # 拼装 prompt：style_anchor + character appearances + shot description
+            # V3.4 ADR-006：style_anchor 通过 _safe_style_anchor 兜底（空值 → 写实系；含守卫词）
+            from hailuo_video.asset_prep import _safe_style_anchor
             full_prompt = _build_image_prompt(
                 shot.description,
                 shot.characters or [],
                 storyboard.characters or [],
-                getattr(storyboard, "style_anchor", "") or "",
+                _safe_style_anchor(getattr(storyboard, "style_anchor", "") or ""),
             )
             # 与 V3 orchestrator 共用 asset_prep.resolve_shot_reference_urls：
             # 角度 + 表情 + 场景变体，只传 http(s) URL，最多 4 个。

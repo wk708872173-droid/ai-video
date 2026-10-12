@@ -239,3 +239,72 @@ def test_structured_logger_records_phase_failed_with_error(tmp_path):
     assert line["event_type"] == "phase_failed"
     assert line["payload"]["error_code"] == "FFmpegError"
     assert "matches no streams" in line["payload"]["error_msg"]
+
+
+# ---------- V3.4 ADR-006：prompt 硬编码审计 ----------
+
+def test_asset_prep_prompts_have_no_concept_art_hardcode():
+    """ADR-006：CHARACTER_ANGLE_PROMPTS 模板开头不准 'concept art style'。
+
+    V3.3 bug：template 写 "concept art style, {style_anchor}, ..." 与用户写实系冲突，
+    → 模型挑简单的 "concept art style" 实现 → 卡通漂移（"小黄变猫"事件）。
+    修复：删除硬编码 "concept art style" 前缀，让 style_anchor 独占风格控制。
+
+    注：检查范围**仅限 prompt 模板字符串**（含 {style_anchor} 或 {appearance} 的行），
+    注释里的解释性字符串不算（避免误伤）。
+    """
+    asset_prep_src = (SANDBOX / "hailuo_video" / "asset_prep.py").read_text(encoding="utf-8")
+    template_lines = [
+        line for line in asset_prep_src.splitlines()
+        if "{style_anchor}" in line or "{appearance}" in line
+    ]
+    assert template_lines, "未找到 prompt 模板行"
+    for line in template_lines:
+        assert "concept art style" not in line, (
+            f"prompt 模板仍含硬编码 'concept art style'：{line.strip()}\n"
+            f"V3.4 ADR-006：删除硬编码，让 style_anchor 独占风格控制。"
+        )
+
+
+def test_asset_prep_prompts_still_include_style_anchor_placeholder():
+    """ADR-006 反向验证：模板仍保留 {style_anchor} 占位符（确保用户风格能注入）。"""
+    asset_prep_src = (SANDBOX / "hailuo_video" / "asset_prep.py").read_text(encoding="utf-8")
+    # 至少 5 个模板含 {style_anchor}（front + side_left + side_right + back + side）
+    style_anchor_count = asset_prep_src.count("{style_anchor}")
+    assert style_anchor_count >= 5, (
+        f"asset_prep.py 应至少有 5 处 {{style_anchor}} 占位符（每 angle 模板 1 处），"
+        f"实际 {style_anchor_count}"
+    )
+
+
+def test_orchestrator_uses_safe_style_anchor_for_image_gen():
+    """ADR-006：orchestrator._build_task 调 image_gen 时 style_anchor 必须经 _safe_style_anchor 兜底。
+
+    V3.3 bug：style_anchor 为空时 prompt 完全没有 anti-cartoon 守卫 → 漂移到卡通。
+    修复：_build_task 内提前调 _safe_style_anchor；即使 storyboard 没设也兜底。
+    """
+    orch_src = (SANDBOX / "hailuo_video" / "orchestrator.py").read_text(encoding="utf-8")
+    # 必须有 _safe_style_anchor import + 调用
+    assert "from hailuo_video.asset_prep import _safe_style_anchor" in orch_src, (
+        "orchestrator.py 必须 import _safe_style_anchor"
+    )
+    assert "_safe_style_anchor(" in orch_src, (
+        "orchestrator.py 必须调用 _safe_style_anchor() 兜底"
+    )
+
+
+def test_orchestrator_motion_gen_no_unreachable_else_branch():
+    """ADR-006：motion_gen path 的 'else: task["subject_action"] = base_subject_action'
+    在 _safe_style_anchor 兜底后永远走不到，应当被清理。
+
+    这是 dead code 标记，重复触发会让人怀疑是不是有 bug。
+    """
+    orch_src = (SANDBOX / "hailuo_video" / "orchestrator.py").read_text(encoding="utf-8")
+    # motion_gen 路径不应再有 if style_anchor / else 模式（既然 _safe_style_anchor 兜底）
+    # 简化版断言：找 'base_subject_action' 后不应紧跟 'else:' 分支
+    motion_section = orch_src[orch_src.find('agent_name == "motion_gen"'):]
+    motion_section = motion_section[:motion_section.find('elif agent_name')]
+    # V3.4 ADR-006：简化后 motion_gen 应只有一种赋值（不再 if/else）
+    # 期望 base_subject_action 出现在 f"[风格:{style_anchor}]..." 上下文
+    assert 'base_subject_action = getattr(shot, "subject_action", "") or description' in motion_section
+    assert 'task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"' in motion_section

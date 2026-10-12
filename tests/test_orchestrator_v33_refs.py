@@ -58,7 +58,7 @@ def _make_storyboard_with_scene(n: int = 2, scene_id: int = 1) -> Storyboard:
 # ---------- Change D 测试 ----------
 
 def test_motion_gen_style_anchor_prefix():
-    """Change D：style_anchor 前置（不再后置）。"""
+    """V3.3 Change D：style_anchor 前置 + V3.4 ADR-006 自动追加守卫词。"""
     sb = _make_storyboard_with_scene(n=1)
     cfg = PipelineConfig(image_backend=None, run_dir=Path("/tmp/_test_v33"))
     agent = PipelineAgent(cfg, resume_from=None, load_registry=False)
@@ -66,15 +66,23 @@ def test_motion_gen_style_anchor_prefix():
 
     task = agent._build_task("motion_gen", 0, ctx, type("P", (), {"name": "motion_gen"})())
 
-    # 风格放最前：[风格:...]
+    # V3.4 ADR-006：style_anchor 自动追加 'no illustration no cartoon no anime no CGI'
     sa = task.get("subject_action", "")
-    assert sa.startswith("[风格:photorealistic cinematic]"), f"expected prefix, got: {sa[:80]}"
+    assert sa.startswith("[风格:photorealistic cinematic,"), f"expected prefix, got: {sa[:80]}"
+    assert "no illustration no cartoon no anime no CGI" in sa
     # 主体动作在后
     assert "橘猫伸懒腰" in sa
 
 
-def test_motion_gen_no_style_anchor_unchanged():
-    """Change D 兜底：style_anchor 空时 subject_action 不加前缀。"""
+def test_motion_gen_no_style_anchor_uses_fallback():
+    """V3.4 ADR-006：style_anchor 空时不再 '不变'，而是用 PHOTOREALISTIC_FALLBACK 兜底。
+
+    V3.3 行为：style_anchor="" → subject_action 原文不带 [风格:...]
+    V3.4 行为：style_anchor="" → _safe_style_anchor("") = PHOTOREALISTIC_FALLBACK
+              → subject_action 仍加 [风格:PHOTOREALISTIC_FALLBACK] 前缀
+    目的：空 style_anchor 也不再让 prompt 缺 anti-cartoon 守卫（"小黄变猫"事件根因）。
+    """
+    from hailuo_video.asset_prep import PHOTOREALISTIC_FALLBACK
     sb = _make_storyboard_with_scene(n=1)
     sb.style_anchor = ""
     cfg = PipelineConfig(image_backend=None, run_dir=Path("/tmp/_test_v33"))
@@ -83,8 +91,10 @@ def test_motion_gen_no_style_anchor_unchanged():
 
     task = agent._build_task("motion_gen", 0, ctx, type("P", (), {"name": "motion_gen"})())
 
-    assert task["subject_action"] == "橘猫伸懒腰"
-    assert "[风格:" not in task["subject_action"]
+    # 现在 subject_action **必含** [风格:...] 前缀（不再是 verbatim）
+    assert "[风格:" in task["subject_action"]
+    assert PHOTOREALISTIC_FALLBACK in task["subject_action"]
+    assert "橘猫伸懒腰" in task["subject_action"]
 
 
 # ---------- Change A 测试 ----------
@@ -179,8 +189,9 @@ def test_image_gen_prompt_still_contains_style_anchor():
 
     task = agent._build_task("image_gen", 0, ctx, type("P", (), {"name": "image_gen"})())
 
-    # image_gen prompt 仍含 [风格:...] 前缀
-    assert "[风格:photorealistic cinematic]" in task["prompt"]
+    # V3.4 ADR-006：style_anchor 自动追加守卫词；prefix 不再严格匹配 "[风格:photorealistic cinematic]"
+    assert "[风格:photorealistic cinematic," in task["prompt"]
+    assert "no illustration no cartoon no anime no CGI" in task["prompt"]
 
 
 # ---------- ImageGenAgent 测试 ----------

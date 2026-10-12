@@ -40,35 +40,37 @@ DEFAULT_ASSETS_DIR = Path("./assets")  # 相对 cwd；CLI 可改
 # ---------- Prompt 模板 ----------
 
 # character sheet: 4 角度（V2.5.2 多方向版本，pan_left/pan_right 智能选择）
+# V3.4 ADR-006：移除模板开头硬编码 "concept art style"（与用户写实系 style_anchor 冲突，
+# 导致 "小黄变猫" 事件）。模板只保留中性"reference sheet"前缀；风格由 style_anchor 独占。
 CHARACTER_ANGLE_PROMPTS = {
     "front": (
         "character design reference sheet, front view, "
         "full body, neutral expression, simple light gray background, "
-        "concept art style, {style_anchor}, {appearance}, color palette: {palette}"
+        "{style_anchor}, {appearance}, color palette: {palette}"
     ),
     # V2.5.2：分两个 side 角度；MiniMax 看到"left side" / "right side" 关键词会出对应方向
     "side_left": (
         "character design reference sheet, three-quarter LEFT side view, "
         "showing the character's left side, left arm forward, "
         "full body, walking pose, simple light gray background, "
-        "concept art style, {style_anchor}, {appearance}, color palette: {palette}"
+        "{style_anchor}, {appearance}, color palette: {palette}"
     ),
     "side_right": (
         "character design reference sheet, three-quarter RIGHT side view, "
         "showing the character's right side, right arm forward, "
         "full body, walking pose, simple light gray background, "
-        "concept art style, {style_anchor}, {appearance}, color palette: {palette}"
+        "{style_anchor}, {appearance}, color palette: {palette}"
     ),
     "back": (
         "character design reference sheet, three-quarter back view, "
         "full body, looking away, simple light gray background, "
-        "concept art style, {style_anchor}, {appearance}, color palette: {palette}"
+        "{style_anchor}, {appearance}, color palette: {palette}"
     ),
     # 兼容 V2.5 的 generic side（pan 方向不确定时兜底；不再默认生成）
     "side": (
         "character design reference sheet, three-quarter side view, "
         "full body, walking pose, simple light gray background, "
-        "concept art style, {style_anchor}, {appearance}, color palette: {palette}"
+        "{style_anchor}, {appearance}, color palette: {palette}"
     ),
 }
 
