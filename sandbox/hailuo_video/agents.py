@@ -1,20 +1,8 @@
-"""V3.0 Phase 2 — 7 个 Product Domain Agent 描述符。
+"""Product Domain Agents。
 
-设计原则（plan）：
-  - structural typing（非 ABC 继承）—— 每个 Agent 是 frozen @dataclass + 3 callables
-  - execute 委托现有 module 函数（零重构）
-  - execute 返回 AgentResult（ok / artifacts / error）
-  - validate_inputs 在 execute 前调，失败抛 InputValidationError
-  - idempotency_key 给 Orchestrator 用于 cache lookup
-
-Agents:
-  1. ScriptWriterAgent  ← script_engine.novel_to_storyboard
-  2. AssetPrepAgent     ← asset_prep.prepare_all_characters + ... + prepare_all_scene_variants
-  3. ImageGenAgent      ← image_engine.MiniMaxImageBackend.generate
-  4. VideoSynthAgent    ← video_engine.KenBurnsBackend.render
-  5. TTSAgent           ← tts_engine.EdgeTTSBackend.synth
-  6. ConcatAgent        ← concat_engine.concat_pipeline
-  7. QAAgent            ← quality.compute_color_consistency
+每个 Agent 继承 Agent，实现 _default_execute / _default_validate / _default_key。
+execute 委托现有 engine，返回 AgentResult。DAG 注册表是 ALL_AGENTS（8 个）。
+ConcatAgent 仍保留类，供直接拼接；editing phase 用 EditingAgent，不进 ALL_AGENTS。
 """
 from __future__ import annotations
 
@@ -232,17 +220,7 @@ class ImageGenAgent(Agent):
             return AgentResult(ok=False, error="image_backend missing")
         if not prompt:
             return AgentResult(ok=False, error="prompt empty")
-        # V3.3 P0 修复（2026-10-09）：scene_references（真 24h URL）优先于 subject_references。
-        #   旧行为：subject_references 存的是角色名（"橘猫"），传给 image-01 是字符串，
-        #         image-01 收不到真图锚 → 画风断层（V3 已知问题）。
-        #   新行为：scene_references 非空 → 用作 subject_reference（i2i 多 ref 锚定）；
-        #         scene_references 为空 → 兜底用 subject_references（旧行为，向后兼容）。
-        #   后续 Change B：把 subject_references 也改成 URL list（需先 prep 角色 sheets）。
-        scene_refs = task.get("scene_references") or []
-        if scene_refs:
-            refs_for_backend = scene_refs
-        else:
-            refs_for_backend = task.get("subject_references")
+        refs_for_backend = self._reference_urls(task)
         try:
             results = backend.generate(
                 prompt,
@@ -300,6 +278,29 @@ class ImageGenAgent(Agent):
             raise ValueError(f"ImageResult #{idx} 既无 image_url 也无 bytes")
         out_path.write_bytes(r.bytes)
         return str(out_path)
+
+    @staticmethod
+    def _reference_urls(task: dict) -> list[str] | None:
+        """合并 subject_references 与 scene_references，只保留 http(s) URL，最多 4 个。
+
+        角色名（「橘猫」）不会传给 image-01。场景 URL 已在 subject 列表里时不重复追加。
+        """
+        from hailuo_video.asset_prep import MAX_SUBJECT_REFERENCES
+
+        def _urls(value) -> list[str]:
+            if not value:
+                return []
+            items = [value] if isinstance(value, str) else list(value)
+            return [
+                item for item in items
+                if isinstance(item, str) and item.startswith(("http://", "https://"))
+            ]
+
+        merged: list[str] = []
+        for url in _urls(task.get("subject_references")) + _urls(task.get("scene_references")):
+            if url not in merged and len(merged) < MAX_SUBJECT_REFERENCES:
+                merged.append(url)
+        return merged or None
 
     def _default_validate(self, inputs: dict):
         if not inputs.get("prompt", "").strip():
@@ -743,15 +744,15 @@ class MotionGenerationAgent(Agent):
 
 # ---------- 8 Agent 注册表（V3.1 加 MotionGenerationAgent） ----------
 
+# DAG 上的 8 个 agent。ConcatAgent 不在此列：editing phase 已由 EditingAgent 接管。
 ALL_AGENTS = [
     ScriptWriterAgent(),
     AssetPrepAgent(),
     ImageGenAgent(),
-    MotionGenerationAgent(),      # V3.1
+    MotionGenerationAgent(),
     VideoSynthAgent(),
     TTSAgent(),
-    ConcatAgent(),
-    EditingAgent(),                # V3.2 REQ-303
+    EditingAgent(),
     QAAgent(),
 ]
 
@@ -765,16 +766,18 @@ def get_agent(name: str):
 
 
 __all__ = [
+    "Agent",
     "AgentResult",
     "InputValidationError",
     "AgentExecutionError",
     "ScriptWriterAgent",
     "AssetPrepAgent",
     "ImageGenAgent",
-    "MotionGenerationAgent",   # V3.1
+    "MotionGenerationAgent",
     "VideoSynthAgent",
     "TTSAgent",
     "ConcatAgent",
+    "EditingAgent",
     "QAAgent",
     "ALL_AGENTS",
     "get_agent",

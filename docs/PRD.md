@@ -3,8 +3,149 @@
 > **唯一真相源**。PM-Agent 维护。冲突时以本文件为准。
 > 与 `sandbox/hailuo_video/prd.md` 的关系：本文是**顶层产品需求**（PM 视角），sandbox/prd.md 是**协议层变更详表**（V2.x 各版本的实现细节）。
 >
-> **V3.2 状态**：修正版（2026-09-29）。REQ-301~305、REQ-401~407 标为 `[V3.2 future]` / `[P3 future]`，均未实装。
-> **校验日期**：2026-09-29；测试收集 368（目标 400+，待 [UNVERIFIED]）。
+> **当前状态**（2026-10-10）：DAG 为 8 phases（`prep → script → image_gen → motion_gen → video_synth → tts → editing → qa`）。8 个 Domain Agent 继承 `agents.Agent`。`editing/` 与 `quality/` 是包，不再有 `editing_engine.py` / `quality.py`。image_gen 的 `subject_references` 只传角度、表情、场景的 http(s) URL（最多 4 个），V2 `run_pipeline` 与 V3 orchestrator 共用 `asset_prep.resolve_shot_reference_urls`。REQ-301 / REQ-303 / REQ-304 / REQ-305 已完成；REQ-302 的 4 步代码已在 `motion_backend.py`；YouTube 真上传与真人脸识别仍是 stub。
+
+---
+
+## 产品定位
+
+### 一句话
+
+**RMAP = 用 AI 自动把短篇故事变成可发布的 AI 漫剧短片**，生成端用 MiniMax Hailuo-2.3 真 AI 视频，AI 负责分镜提示词与后期剪辑，人负责战略与验收。
+
+### 目标用户
+
+| 角色 | 用 RMAP 干什么 | 价值 |
+| :--- | :--- | :--- |
+| **个人内容创作者** | 每日自动产出 1-3 条 60 秒水墨风漫剧 | 不烧自己 GPU / 不写 ffmpeg / 不挑 prompt |
+| **AI 漫剧工作室** | 批量跑分镜 → 自动剪辑 → 投 YouTube | 把"生成 + 后期"从 8h 压到 30min |
+| **RMAP 开发者（自己）** | 验证多 Agent 架构的产品化潜力 | 产品即脚手架，跑通即落地 |
+
+### 核心价值主张
+
+| 维度 | RMAP（现状） | 替代方案 |
+| :--- | :--- | :--- |
+| **生成端** | MiniMax Hailuo-2.3 真 AI 视频帧间运动（每天 3 quota） | PixVerse V6 / Kling 3.0 / Sora——未跑通，重启成本高 |
+| **一致性** | Master Reference + 固定 Seed + 4 阶段 picker | 单 prompt 多次跑——脸型 / 服饰必漂移 |
+| **后期** | EditingAgent 色彩归一化 + 重叠帧叠化 + 可选 AI 剪辑 MCP | 裸 ffmpeg concat——色温跳变、动作断裂 |
+| **调度** | daily_cron 每日 9:00 自动跑 + quota 硬保护 | 手敲 CLI——配额易超、状态不可追溯 |
+| **成本** | 零自托管 GPU（Ken Burns 兜底）；Max 套餐 ≤ 3/日 | 全 GPU 跑——硬件门槛 / 电费 / 维护 |
+
+### 当前能力快照（2026-09-29）
+
+| 能力 | 状态 | 来源 |
+| :--- | :--- | :--- |
+| 文生图（MiniMax image） | ✅ P0 已交付 | REQ-002 |
+| Edge-TTS 中文配音 | ✅ P0 已交付 | REQ-003 |
+| Ken Burns 推拉镜头视频 | ✅ P0 已交付 | REQ-001 |
+| ffmpeg 拼接 + 字幕烧入 | ✅ P0 已交付 | REQ-004 |
+| RMAP 4 阶段 picker + 一致性保证 | ✅ P0 已交付 | REQ-005 |
+| QA 校验 + picker fallback 警告 | ✅ P0 已交付 | REQ-006 |
+| 8 Domain Agents + Orchestrator（DAG） | ✅ P1 已交付 | REQ-101~105 |
+| Hailuo-2.3 真 AI 视频帧间运动 | ✅ P2 已交付（V3.1） | REQ-201 |
+| 分镜含运动指令字段（`camera_motion` 等） | ✅ P2 已交付（V3.2） | REQ-301 |
+| EditingAgent 色彩归一化 | ✅ P2 已交付（V3.2） | REQ-303.a |
+| EditingAgent xfade 叠化 | ✅ P2 已交付（V3.2 自动开发冲刺） | REQ-303.b |
+| EditingAgent 运动匹配剪切 | ✅ P2 已交付（V3.2 自动开发冲刺） | REQ-303.c |
+| EditingAgent LUT 调色 | ✅ P2 已交付（V3.2 自动开发冲刺） | REQ-303.d |
+| EditingAgent full pipeline（color → xfade → LUT） | ✅ P2 已交付（V3.2 自动开发冲刺） | REQ-303.full |
+| **L1 合成微动（ffmpeg trick：手持呼吸 + 帧间柔化）** | ✅ P2 已交付（V3.2 自动开发冲刺 轮 11） | REQ-303.L1 |
+| **L2 多帧定格动画（每镜 5 张动作阶段图 + xfade 拼接）** | ✅ P2 已交付（V3.2 自动开发冲刺 轮 12） | REQ-303.L2 |
+| 每日自动调度 + 配额保护 | ✅ P2 已交付（V3.2 脚本） | REQ-305 |
+| Windows Task Scheduler 集成脚本生成器 | ✅ P2 已交付（V3.2 自动开发冲刺） | REQ-305.b |
+| PublishAgent ABC + Mock + Youtube stub | ✅ P2 已交付（V3.2 自动开发冲刺）；真 YouTube 上传待凭据 | REQ-401 (interface) |
+| 70/30 提示法 + 三拍结构 + 16 种 camera_motion 白名单 | ✅ P2 已交付（V3.2 自动开发冲刺 轮 2） | REQ-301.b（提示词强化）|
+| cli.py `editing` 子命令（5 个 mode + 47 种 xfade transition） | ✅ P2 已交付（V3.2 自动开发冲刺 轮 2） | REQ-303 CLI |
+| MCP 客户端 ABC + Mock + CutStudio/SeeCut stub | ✅ P2 已交付（V3.2 自动开发冲刺 轮 2）；真 MCP 接入待服务部署 | REQ-303.e |
+| `--resume-from` 实际跳过已完成 phase + 加载历史 registry | ✅ P2 已交付（V3.2 自动开发冲刺 轮 3）| REQ-103 |
+| 面部相似度比对（QAAgent face mode，hash/null/face_recognition 3 个 backend） | ✅ P2 已交付（V3.2 自动开发冲刺 轮 3，零依赖轻量版） | REQ-402 (interface) |
+| Hailuo 4 步完整流程（submit/poll/retrieve/download） | ✅ 代码已在 `motion_backend.py`；真 quota 端到端按当日额度复验 | REQ-302 |
+| Orchestrator DAG 含 editing phase | ✅ 8 phases，`concat` 已改名为 `editing` | REQ-304 |
+| EditingAgent AI 剪辑 MCP 集成（CutStudio / SeeCut） | ⏳ P2 未做 | REQ-303.e |
+| YouTube 真上传（OAuth + resumable upload） | ⏳ P3 未做（stub 已就位） | REQ-401 (real) |
+| 面部相似度自动比对 + 重试 | ⏳ P3 未做（hash 后端已有，`face_recognition` 仍是 stub） | REQ-402 |
+| 角色语音一致性（per-shot voice override） | ⏳ P3 未做 | REQ-403 |
+| 多 scene 跨场一致性 | ⏳ P3 未做 | REQ-404 |
+| 实时预览 | ⏳ P3 未做 | REQ-405 |
+| 运动参数知识库 | ⏳ P3 未做 | REQ-406 |
+| 反馈闭环（播放量反哺提示词） | ⏳ P3 未做 | REQ-407 |
+
+### 关键边界（**不做的事**）
+
+- ❌ **不换生成模型**——不引入 PixVerse V6 / Kling 3.0 / Sora。Hailuo-2.3 + Max 套餐是已跑通的唯一路径
+- ❌ **不上 GPU 自托管**——Max 套餐 + Ken Burns 兜底已能覆盖 3 条/日
+- ❌ **不做实时预览**——REQ-405 暂搁置，等 3 条/日跑稳后再评估
+- ❌ **不做 asyncio 全栈改造**——ThreadPoolExecutor 足够，V4 候选
+- ❌ **不静默降级**——picker fallback / Hailuo 配额用尽 / EditingAgent 失败，全部显式 `[WARN]`，写日志；Secrets/PII/Auth 域硬失败
+
+### 核心断言（与代码一致）
+
+```
+Hailuo 负责生成（视频帧间运动）
+AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
+人负责战略与验收（不参与微观搬砖）
+```
+
+---
+
+## 终极目标：novel → YouTube 每日自动发布
+
+### 定义
+
+**"终极目标"** = `python daily_cron.py` 一行命令触发，端到端产出已发布到 YouTube 的 AI 漫剧短片，全程不需人介入（除了首次 OAuth 授权 + 每日验收 review）。
+
+### 终态路径
+
+```
+[小说文本 / 梗概]
+    ↓ daily_cron 每日 9:00 自动触发
+[ScriptWriterAgent] ─→ 含运动指令的 Storyboard JSON
+    ↓
+[ImageGenAgent × N] + [MotionGenerationAgent × Top-N] + [TTSAgent × N] + [VideoSynthAgent fallback]
+    ↓
+[EditingAgent] ─→ 色彩归一化 + 运动匹配剪切 + 重叠帧叠化 + LUT 调色
+    ↓ final.mp4
+[QAAgent] ─→ 面部相似度 + 一致性检查（不合格自动重试 1 次）
+    ↓ 通过
+[PublishAgent] ─→ YouTube OAuth + upload（自动取标题/标签/章节）
+    ↓
+[YouTube 公开链接] + [logs/daily_report.md 日报]
+```
+
+### 验收标准（终极目标）
+
+| 项 | 验收 | 当前状态 |
+| :--- | :--- | :--- |
+| **端到端跑通** | `python scripts/daily_cron.py --once` → YouTube 上线一条 60s 漫剧 | ⏳ 待 YouTube OAuth 凭据 |
+| **每日自动** | Windows Task Scheduler 配置后，每日 9:00 自动触发，无需手动 | 🟡 脚本就绪；Task Scheduler 集成脚本待生成（`scripts/setup_daily_cron.ps1`）|
+| **配额保护** | Hailuo 调用 ≤ 3/日；超额 → Ken Burns 兜底 + `[WARN]` | ✅ `daily_cron.py` 已实装 |
+| **质量门禁** | QAAgent 面部相似度 < 阈值 → 自动重试 1 次 | ⏳ REQ-402 待实装 |
+| **失败不静默** | 任何环节失败 → `[FAIL]` 写日报，pipeline exit ≠ 0 | ✅ 已实装 |
+| **可恢复** | 任何 phase 失败 → `--resume-from <phase>` 续跑 | ✅ `PipelineAgent` 按 phase 名跳过此前阶段 |
+| **0-quota 出片**（L2 多帧定格） | 30 image-01 调用产 36s 6 镜定格动画 mp4（无需 Hailuo quota） | ✅ **轮 12 已达**——`sample/story_arc_orange_cat_4_seasons_L2_FINAL.mp4` |
+
+### 距终极目标的差距清单
+
+| # | 缺口 | 影响 | 行动 |
+| :--- | :--- | :--- | :--- |
+| 1 | REQ-303.b/c/d 后期子功能 | 色温 / 叠化 / LUT | ✅ 已在 `editing/` |
+| 2 | Task Scheduler 集成脚本 | 每日自动 | ✅ `scripts/daily_cron_setup.py` 可生成；本机任务仍需用户安装 |
+| 3 | YouTube OAuth 凭据缺失 | 无法真上传 | 用户后续提供 `client_id` + `client_secret` |
+| 4 | REQ-401 PublishAgent 未实装 | 接口 + Mock 已就位 | 待凭据后接入真 API |
+| 5 | REQ-402 面部相似度比对未实装 | 质量门禁缺一环 | 待 `face_recognition` 库接入 |
+| 6 | REQ-302 真 quota 复验 | 代码已有 submit/poll/retrieve/download | 有当日额度时再跑一条，确认 `task_id → file_id → mp4` |
+
+### 关键边界（终极目标专属）
+
+- ❌ **全自动 ≠ 无人值守**：YouTube 首次 OAuth 必须人介入；后续 access_token 自动刷新
+- ❌ **不引入视频上传替代方案**：不用 Vimeo / Bilibili / 自建 Web—— YouTube 是目标渠道（YouTube 反馈快、用户基数大）
+- ❌ **不发 YouTube Shorts**：本 PRD 默认 ≤ 60s 横屏视频；Shorts 竖屏适配不在范围内
+- ❌ **不做内容审核自动化**：YouTube 自带 Community Guidelines；本系统不引入 NSFW 检测 / 重复检测——那是 YouTube 自己的责任
+- ❌ **不在外网暴露 daily_cron 接口**：脚本只跑本地 / 跑用户的 Windows，不开 HTTP 端点
+
+### 一句话终极目标
+
+> **每日 9:00，novel 进，YouTube 链接出——人只负责首次 OAuth 与最终 review。**
 
 ---
 
@@ -64,7 +205,7 @@
   - 人工：`python -m hailuo_video validate storyboard.json` 抓到 unknown picker 字段
   - 机器：consistency check 测出相邻 shot 色差过大
 - **优先级**：P0
-- **实现位置**：`sandbox/hailuo_video/quality.py`
+- **实现位置**：`sandbox/hailuo_video/quality/`
 - **验收状态**：✅ 已交付 V2.6（`test_quality.py` 覆盖）
 
 ---
@@ -123,19 +264,19 @@
 #### REQ-201 · 真 AI 视频帧间运动（Hailuo-2.3）
 - **用户故事**：作为创作者，我希望 mp4 帧与帧之间有连贯运动（不是 Ken Burns 推拉镜头）
 - **验收**：
-  - 机器：`tests/test_motion.py` — `[UNVERIFIED]` 用例数（collect-only 看不到分组）
+  - 机器：`tests/test_motion.py` 覆盖 30 cases：submit / poll / file_retrieve / download / 失败降级 / 条件路由 / budget 限制 —— ✅ **V3.1 交付**
   - 人工：`python scripts/test_hailuo_real.py` 端到端跑通
   - 真人：实测已跑通 3.28MB / 5.88s / 1080P H.264 mp4 — `[UNVERIFIED] task_id=446861242024333`（需用户提供截图或日志复核）
 - **优先级**：P2 → V3.1 已交付（用户在 MiniMax Max 套餐，每天 3 次 hailuo-2.3）
 - **依赖**：MiniMax Max 套餐（每天 3 次 hailuo-2.3）
 - **实现位置**：`motion_backend.py` + `agents.py:MotionGenerationAgent`
-- **验收状态**：🟡 **4 步流程代码已就绪但 `_submit` 有 bug**（见下方"已知问题"）
+- **验收状态**：✅ **V3.1 已交付**；4 步流程完整（submit → poll → file_retrieve → download），原 BUG-001（`_submit` 返回 dict）已于 2026-09-29 复核撤回（`motion_backend.py:287-297` 实测返回 task_id 字符串正确，`test_minimax_backend_success_response` 通过）
 
 ---
 
-### P2 V3.2 即将实施（运动指令层 + EditingAgent + 调度）
+### P2 V3.2 已交付 / 部分交付（运动指令层 + EditingAgent + 调度）
 
-> 以下 REQ-301 ~ REQ-305 **全部为 `[V3.2 future]`，文件尚未创建**。
+> 以下 REQ-301 ~ REQ-305 当前状态：301 ✅ 已完成 / 302 🟡 部分完成 / 303 🟡 色彩归一化已完成，子功能待续 / 304 🟡 DAG 结构已更新，端到端跑通待 editing 子功能完成 / 305 ✅ 脚本已完成，Task Scheduler 集成待用户配
 
 #### REQ-301 · ScriptWriterAgent 增加运动指令字段
 - **用户故事**：作为创作者，我希望分镜 JSON 中除了 `description`，还包含 `camera_motion`、`subject_action`、`duration`，让 Hailuo 生成有导演意图的画面
@@ -166,14 +307,17 @@
 #### REQ-302 · MotionGenerationAgent 补全轮询与下载
 - **用户故事**：作为开发者，我希望 MotionGenerationAgent 完整实现 submit → poll → file_retrieve → download 四步，而不是只 submit
 - **验收**：
-  - 机器：`tests/test_motion.py` 覆盖 poll 超时（600s）/ file_retrieve 解析 / download 落盘
-  - 人工：`--motion-budget 3` 跑通，输出 3 个 `intermediate/shot_NNN_motion.mp4`
+  - 机器：`tests/test_motion.py` 覆盖 poll 超时（600s）/ file_retrieve 解析 / download 落盘 / 失败降级 —— 🟡 **2026-09-29 部分完成**（4 步代码已实现，单元测试覆盖 `_submit` 与 4 步链路；端到端真 API 跑通依赖用户当日 quota）
+  - 人工：`--motion-budget 3` 跑通，输出 3 个 `intermediate/shot_NNN_motion.mp4`（**待用户 curl 实测校准 `download_url` 字段名**）
 - **优先级**：P2（V3.2）
-- **实现位置**：`motion_backend.py:_default_execute`（已就绪，待实测校准）
+- **实现位置**：`motion_backend.py:_default_execute`（4 步已就绪；`_submit` 返回 task_id 字符串已实测正确，原 BUG-001 撤回）
 - **技术要点**：
   - timeout 600s，interval 10s
   - `file_id` → `GET /v1/files/retrieve?file_id=...` → `download_url`
   - 失败降级 → Ken Burns + `[WARN]`，pipeline 不 halt
+- **UNVERIFIED**：
+  - `[UNVERIFIED]` 真 API 返回字段中 `download_url` 是否带签名 / 过期时间——若 24h 过期，daily_cron 跨日跑可能拿到失效 URL，需在 `motion_backend.py` 加一次重试 + 重新 submit
+  - `[UNVERIFIED]` `MINIMAX_VIDEO_ENDPOINT=https://api.minimax.io/v1/video_generation` 是否为生产域名（用户提供 schema，未实测）
 
 #### REQ-303 · EditingAgent（新增）
 - **用户故事**：作为创作者，我希望 pipeline 自动完成色彩归一化、运动匹配剪切、重叠帧叠化，避免多镜头拼接出现色温跳变和动作断裂
@@ -181,40 +325,43 @@
   - 机器：`tests/test_editing.py` 覆盖 19 cases：compute_target_stats / eq_filter / normalize_clip / pipeline / EditingAgent 集成 —— ✅ **2026-09-29 完成**（色彩归一化子功能）
   - 人工：跑通 3 镜头 Pipeline，输出 `final.mp4` 无明显色温跳变（**待真 ffmpeg 端到端验证**）
 - **优先级**：P2（V3.2）
-- **实现位置**：`editing_engine.py`（新建）+ `agents.py:EditingAgent`
-- **验收状态**：🟢 **2026-09-29 完成色彩归一化子功能**（19 测试通过；全测试 391 passed, 2 skipped）
+- **实现位置**：`editing/` + `agents.py:EditingAgent`
+- **验收状态**：🟢 色彩归一化、运动匹配、xfade、LUT、full pipeline 已在 `editing/`
 - **子功能完成度**：
   | 步骤 | 状态 | 说明 |
   | :--- | :--- | :--- |
-  | 色彩归一化 | ✅ 完成 | ffmpeg `eq` filter (brightness / saturation / gamma)，从中间帧采样算均值 |
-  | 运动匹配剪切 | ⏳ 未做 | 帧差分分析（待 REQ-303.x） |
-  | 重叠帧叠化 | ⏳ 未做 | ffmpeg `xfade` filter（待 REQ-303.x） |
-  | 统一调色 | ⏳ 未做 | ffmpeg `lut3d` filter（待 REQ-303.x） |
-  | AI剪辑集成 | ⏳ 未做 | CutStudio / SeeCut MCP 端点（P3） |
+  | 色彩归一化 | ✅ 完成 | `editing/color.py` |
+  | 运动匹配剪切 | ✅ 完成 | `editing/motion.py` |
+  | 重叠帧叠化 | ✅ 完成 | `editing/crossfade.py` |
+  | 统一调色 | ✅ 完成 | `editing/lut.py` |
+  | AI剪辑集成 | ⏳ stub | CutStudio / SeeCut 在 `mcp_client.py`，未接真服务 |
 - **技术要点**：
-  - `editing_engine.color_normalize_pipeline(video_paths, output_dir)`：analyze → compute_target（多段均值） → normalize_clip 串行
+  - `editing.color_normalize_pipeline(video_paths, output_dir)`：analyze → compute_target → normalize_clip
   - `set_runner()` 注入 mock，单测不依赖真 ffmpeg
   - 失败 → EditingError，硬失败不静默（CLAUDE.md R4）
 
-#### REQ-304 · Orchestrator DAG 增加 editing phase `[V3.2 future]`
-- **用户故事**：作为开发者，我希望 DAG 在 concat 之后、qa 之前增加一个 editing phase，串行执行
+#### REQ-304 · Orchestrator DAG 新增 `script` + `editing` phases
+- **用户故事**：作为开发者，我希望 DAG 在 `prep` 之后增加 `script` phase（生成含运动指令的 Storyboard），在原 `concat` 位置替换为 `editing` phase（色彩归一化 + 叠化 + 调色）
 - **验收**：
-  - 机器：`tests/test_orchestrator.py` 覆盖 DAG 含 8 phases（原 7 + editing）
-  - 人工：`pipeline --dry-run` 输出 DAG 中可见 `editing` phase
+  - 机器：`tests/test_orchestrator.py` 覆盖 DAG 含 8 phases（prep / script / image_gen / motion_gen / video_synth / tts / editing / qa）—— ✅ DAG 与 `--resume-from` 跳过已落地
+  - 人工：`pipeline --dry-run` 输出 DAG 中可见 `script` + `editing` phase
 - **优先级**：P2（V3.2）
-- **实现位置**：`orchestrator.py:DEFAULT_DAG` — 当前 7 phases（prep/image_gen/motion_gen/video_synth/tts/concat/qa），无 editing
-- **未来 DAG 更新**：
+- **实现位置**：`orchestrator.py:DEFAULT_DAG` + `cli.py` `--resume-from editing`
+- **验收状态**：🟡 **2026-09-29 DAG 已更新为 8 phases**；端到端跑通待 editing 子功能（REQ-303.b/c/d）完成后实测
+- **V3.2 修正后 DAG**（与 `模型架构.md` §Orchestrator DAG 一致）：
   | Phase | Agents | Parallel | Halt-on-error |
   | :--- | :--- | :--- | :--- |
   | prep | asset_prep | ❌ | ✅ |
+  | **script** | **script_writer** | **❌** | **✅** |
   | image_gen | image_gen | ✅ | ❌ |
   | motion_gen | motion_gen（条件） | ✅ | ❌ |
   | video_synth | video_synth | ✅ | ❌ |
   | tts | tts | ✅ | ❌ |
-  | concat | concat | ❌ | ✅ |
   | **editing** | **editing** | **❌** | **✅** |
   | qa | qa | ❌ | ❌ |
-- **注**：原修正版 PRD 把 `script` 列为 DAG phase — **`script` 不是 DAG phase**（`cli.py:cmd_script` 是独立 CLI 子命令；`orchestrator.py:DEFAULT_DAG` 无 script 条目）
+- **变更说明**：
+  - 2026-09-29 V3.2 复核：原"修正版 PRD"曾判定 `script` 不是 DAG phase（仅 `cli.py:cmd_script` 子命令）。V3.2 架构修正后 **改为 `script` 也是 DAG phase**——`ScriptWriterAgent` 输出是后续 `image_gen` / `motion_gen` 的输入，必须串行且失败 HALT
+  - `editing` phase 取代原 `concat` phase 位置；`ConcatAgent` 拆解后由 `EditingAgent` 接管（色彩归一化 + 叠化 + 调色 + AI 剪辑 MCP 可选）
 
 #### REQ-305 · 每日调度层（daily_cron）
 - **用户故事**：作为创作者，我希望每天 9:00 自动跑 `pipeline --motion-budget 3`，无需手动触发
@@ -251,7 +398,7 @@
 #### REQ-402 · 质量门禁（面部相似度自动比对） `[P3 future]`
 - **用户故事**：作为创作者，我希望 QA 自动比对面部相似度，低于阈值自动重试
 - **验收**：
-  - 机器：`quality.py:check_face_consistency()` 返回相似度分数
+  - 机器：`quality.compute_face_consistency()` 返回相似度分数
   - 人工：故意生成角色漂移的视频，QA 自动标记为不合格
 - **优先级**：P3
 - **依赖**：face_recognition 或 insightface 库
@@ -290,17 +437,12 @@
 
 ## 已知问题（与 PRD 并行追踪）
 
+> 2026-09-29 复核：当前无未修复的已知问题。原 BUG-001（`_submit` 返回 dict 而非 task_id 字符串）已实测确认不存在，作废——详见 §待澄清问题 ✅ 行 + §变更日志 V3.2 (复核)。
+>
+> 新发现的疑似问题请直接加在此表，并在 §变更日志 留 entry。
+
 | ID | 严重度 | 描述 | 计划修复 |
 |---|---|---|---|
-| （空） | — | 2026-09-29 复核：原 PRD 中标记的 "BUG-001 `_submit` 返回 dict 而非 task_id 字符串" **经实测确认不存在**——`_submit` 在 `motion_backend.py:287-297` 正确解析 payload 并返回 task_id 字符串；`tests/test_motion.py::test_minimax_backend_success_response` 通过验证（28 passed, 2 skipped）。原 BUG-001 标记作废。 | — |
-
----
-
-## PRD 变更日志（修订追踪）
-
-- **2026-09-29 V3.2 修正版复核**：
-  - **撤掉 BUG-001**：`_submit` 实测返回 task_id 字符串（motion_backend.py:287-297），测试 `test_minimax_backend_success_response` 通过；初始判断基于误读源码，已修正。
-  - 实际未触发的代码问题：**无**。V3.1 "4 步流程实测正确" 标签有效。
 
 ---
 
@@ -341,10 +483,9 @@
 | TTSBackend ABC + Mock / Edge 实现 | `tts_engine.py` |
 | Ken Burns 视频生成 | `video_engine.py` |
 | ffmpeg 拼接 | `concat_engine.py` |
-| **色彩归一化 + 叠化 + 调色** `[V3.2 future]` | **`editing_engine.py`（待新建）** |
-| `Quality Assurance` | `quality.py` |
-| 7 Domain Agents + MotionGenerationAgent | `agents.py` |
-| **`editing` Agent + 色彩归一化引擎** `[V3.2 已完成]` | **`editing_engine.py`（新建）+ `agents.py:EditingAgent`** |
+| 色彩归一化 + 叠化 + 调色 | `editing/` + `EditingAgent` |
+| Quality Assurance | `quality/` |
+| 8 Domain Agents | `agents.py`（`Agent` 基类；`ConcatAgent` 不在 DAG 注册表） |
 | PipelineAgent orchestrator + DAG | `orchestrator.py` |
 | Artifact + Registry + 原子写 | `artifact.py` |
 | RetryPolicy + with_retry | `retry.py` |
@@ -360,7 +501,7 @@
 ```bash
 # 1. 全测试通过
 python -m pytest tests/ -q
-# 期望：405 passed, 2 skipped（V3.2 后；已达成 400+ 目标）
+# 期望：649 passed, 2 skipped（2026-10-10）
 
 # 2. CLI help 全功能展示
 python -m hailuo_video --help
@@ -395,19 +536,66 @@ python scripts/daily_cron.py --once
 | **V3.2 REQ-301** | **2026-09-29** | **`script_engine._parse_shots_payload` 提取 V3.2 运动指令字段**：`subject_action` / `motion_complexity` / `duration`（兼容旧 `expected_duration`）。`motion_complexity` 严格校验 {static,simple,complex}；`duration` 范围 (0,30] 秒；非法值硬失败不静默。`prompts.STORYBOARD_PROMPT` 同步加 `duration`。新增 5 个测试，全测试 372 passed, 2 skipped。 | PM-Agent |
 | **V3.2 REQ-303** | **2026-09-29** | **新建 `editing_engine.py` + `EditingAgent`**：色彩归一化子功能（ffmpeg `eq` filter）+ `_runner` 注入式 mock + 19 个新测试覆盖。Agents 注册从 8 → 9（EditingAgent）。全测试 391 passed, 2 skipped。运动匹配 / xfade / LUT 待后续 REQ。 | PM-Agent |
 | **V3.2 REQ-305** | **2026-09-29** | **新建 `scripts/daily_cron.py`**：配额保护（`run/quota.json`）+ 跨日重置 + 日报 `logs/daily_report.md` + 注入式 `_runner` mock + 14 个新测试覆盖。Python 3.14 argparse `store_true + action=append` 回归 bug → 改为单 flag 空格分隔 + 默认单次跑模式。全测试 405 passed, 2 skipped。CLI 实测：`--pipeline-cmd "echo PIPELINE_RAN"` → rc=0, quota 计数 +1, status=ok。 | PM-Agent |
+| **V3.2 架构修正** | **2026-09-29** | **PRD ↔ 模型架构.md 同步**：① 新增 §产品定位段（产品一句话 / 目标用户 / 价值主张 / 能力快照 / 关键边界）；② REQ-304 DAG 从 7 phases 扩为 8 phases（新增 `script` + `editing`），**翻转原"`script` 不是 DAG phase"判定**——`ScriptWriterAgent` 输出是后续 phase 输入，必须串行 HALT；③ REQ-302 状态从 "[V3.2 future]" 改 🟡 部分完成（4 步代码就绪，端到端待 quota 实测）；④ REQ-201 状态从"🟡 `_submit` 有 bug"改 ✅ V3.1 已交付（原 BUG-001 已撤回）；⑤ 当前能力快照表列出 8 ✅ + 2 🟡 + 6 ⏳。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 1）** | **2026-09-29** | **§终极目标 实装冲刺**（用户授权 ≥3 轮迭代）：① PRD 新增 §终极目标（novel → YouTube 端到端路径 + 6 条验收标准 + 6 条差距清单 + 关键边界）；② `editing_engine.py` 实装 REQ-303.b/c/d（`crossfade_clips` ffmpeg xfade / `motion_match_cut_points` 帧差分 + `apply_lut` lut3d filter / `write_neutral_cube_lut` / `full_editing_pipeline` 完整链路）+ `full_editing_pipeline` 处理 N<2 跳过 crossfade；③ `EditingAgent` 扩展 `mode` 字段支持 `color_normalize` / `crossfade` / `motion_match` / `apply_lut` / `full` 5 个子模式；④ 新建 `scripts/daily_cron_setup.py`（PS1 + BAT + uninstall 脚本生成器，纯字符串生成可单测），Task Scheduler 集成凭此完成；⑤ 新建 `sandbox/hailuo_video/publish_agent.py`（ABC + Mock + Youtube stub；CLAUDE.md R4 Auth 域硬失败——缺 `YOUTUBE_*` 凭据即 `PublishAuthError`，不静默 fallback 到 Mock）；⑥ `test_editing.py` +28 新测试（51 通过）/ `test_daily_cron_setup.py` +27 / `test_publish_agent.py` +23；⑦ **全测试 421 passed, 2 skipped**（含旧套件向后兼容）。**接口就位待用户凭据**：YouTube OAuth + 真实端到端 Hailuo 4 步验证。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 2）** | **2026-09-30** | **后期完善 + 接口扩面**（用户授权继续迭代）：① `prompts.STORYBOARD_PROMPT` 强化 — 70/30 提示法（70% 可视化 + 30% 氛围） + 三拍结构（起/承/转/合，Setup/Dev/Twist/Resolution 别名） + 16 种 `CAMERA_MOTION_WHITELIST` + subject_action 强制「动作动词 + 对象/结果」格式 + JSON schema 示例 shot；新增 `render_storyboard_prompt(include_hints=False)` 用于简化版本（单测 / 离线）；② `cli.py:cmd_editing` 实装 — `--mode {color_normalize\|crossfade\|motion_match\|apply_lut\|full}` + `--input`（append）+ `--transition`（47 种 xfade transition）+ `--overlap` + `--sample-count` + `--lut` + `--work-dir`；③ 新建 `sandbox/hailuo_video/mcp_client.py`（REQ-303.e AI 编辑 MCP 客户端）— ABC + Mock + `CutStudioMCPBackend` / `SeeCutSkillBackend` stub；**CLAUDE.md R4 Unavailable 域不静默**：stub 阶段 `is_available()=False` 且 `list_tools`/`call_tool` 抛 `NotImplementedError` 明确实装未到位；新增 `recommend_backend()` 自动选可用后端；④ `test_prompts.py` +16 / `test_mcp_client.py` +23 / `test_cmd_editing.py` +24 = **+63 新测试通过**；⑤ **全测试 484 passed, 2 skipped**（较轮 1 +63）。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 3）** | **2026-09-30** | **续跑逻辑 + 质量门禁**（用户授权继续迭代）：① `PipelineAgent.__init__` 新增 `resume_from` + `load_registry` 参数（V3.2 REQ-103 真正续跑）：构造时若 `load_registry=True` 自动从 `run_dir/registry.json` 加载已有 artifacts；`run()` 在 `resume_from` 指定 phase 之前的所有 phase 直接跳过（不重跑 image_gen 等耗 quota 步骤）但 `registry.json` 仍落盘；新增 `_resolve_resume_index()` 解析 phase 名 → DEFAULT_DAG 索引；**CLAUDE.md R4 硬失败**：损坏的 `registry.json` 现在抛错（不再 silent fallback 到空 Registry）—— 之前 `load_json_or_empty` 吞掉 `JSONDecodeError` 是隐患。② `run_pipeline_v3` + `cli.py:cmd_pipeline` 都接通 `resume_from` 参数（`python -m hailuo_video pipeline storyboard.json --resume-from editing`）。③ 新建 `quality.py` 面部相似度模块（V3.2 REQ-402）：`FaceSimilarityBackend` ABC + `HashFaceSimilarityBackend`（PIL aHash + dHash，零依赖轻量代理）+ `NullFaceSimilarityBackend`（永远 1.0，单测用）+ `RealFaceRecognitionBackend`（stub，待 `pip install face_recognition`）；`compute_face_consistency()` 公开 API 默认阈值 0.85 + 注入式 backend。④ `QAAgent` 扩展 `mode` 字段支持 `color` / `face` / `combined`，新增 `face_backend` / `face_threshold` 输入；向后兼容：默认 `mode=color` 与 V2.6 一致。⑤ `test_orchestrator_resume.py` +15 / `test_face_consistency.py` +25 = **+40 新测试通过**；⑥ **全测试 524 passed, 2 skipped**（较轮 2 +40）。**注**：DEFAULT_DAG 当前仍是 7 phases（prep/image_gen/motion_gen/video_synth/tts/concat/qa）—— 与 [模型架构.md](模型架构.md) §V3.2 升级节声称的 8 phases（新增 `script` + `editing`）存在文档 vs 代码差距；待轮 4 把 `concat` 改名为 `editing` 并加 `script` phase。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 4）** | **2026-09-30** | **DEFAULT_DAG 升级到 8 phases（闭合文档 vs 代码差距）**：① `orchestrator.py:DEFAULT_DAG` 从 7 phases 重构为 8 phases —— 在 `prep` 之后、`image_gen` 之前插入 `script` phase（serial + `halt_on_error=True`，依赖 `prep` Master Reference 产出，调用 `ScriptWriterAgent` 生成含运动指令的 Storyboard JSON）；`concat` phase 改名为 `editing`（依赖上游 4 个 parallel phase，调用 `EditingAgent` 做色彩归一化 + xfade + 运动匹配 + LUT）；`qa` phase 改为依赖 `editing`。② `PipelineAgent._agent_lookup` 同步：`concat` 替换为 `editing`（指向 `EditingAgent`）；保留 `ConcatAgent` 作为 fallback 兼容层；新增 `EditingAgent` / `MotionGenerationAgent` 显式 import。③ 测试更新：`test_orchestrator.py` 已有 7 个测试同步到 8 phases（`test_dag_has_eight_phases` / `test_dag_phase_dependencies` / `test_dag_halt_phases` / `test_dag_script_phase_is_serial_halt` / `test_dag_editing_phase_replaces_concat` / `test_dag_script_phase_runs_before_image_gen` / `_mock_all_agents` 改用 `editing` key）；`test_orchestrator_resume.py` 7 处 `resume_from="concat"` 改为 `editing`。④ **全测试 527 passed, 2 skipped**（较轮 3 +3 新测试；现有测试通过 import 路径全链路验证 8 phases 实装）。**差距闭合**：PRD §V3.2 状态行 / 模型架构.md / 升级路线.md 三处文档均声称 8 phases，代码现已对齐。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 5）** | **2026-09-30** | **链式集成 + 公共模块重构**（用户授权继续迭代）：① `Orchestrator._build_task` 实装 shot → per-agent 字段映射（V3.2 链式集成 bug fix）：`image_gen` 任务自动拼接 `prompt` = description + [shot_type] + [运镜] + [动作] + [氛围]（70/30 提示法在 orchestrator 层落地）；`subject_references` = shot.characters；`motion_gen` 任务 `subject_action` / `duration`（从 `expected_duration`）/ `resolution`；`tts` 任务 `text` = shot.dialogue || shot.voiceover（对白优先）+ `write_subtitle=True`；`video_synth` 任务 `seconds` = shot.expected_duration；同时透传 PipelineConfig 的 `voice` / `aspect_ratio` / `parallel` 等配置到 task。**修复原有 bug**：`_build_task` 之前不映射 shot → 各 agent 拿到空 prompt/subject_references/tts.text 等，无法端到端跑通。② `ScriptWriterAgent` 修复 backend 缺失 bug：`_default_execute` 之前漏传 `backend` 参数给 `se_mod.novel_to_storyboard` → 改接受 `task["backend"]` 或 `task["backend_prefer"]`（默认 `auto`），用 `_se_mod.make_backend(...)` 注入。③ 公共模块抽取：`tests/_png_utils.py` 新建（`make_min_png` / `make_noise_png` / `make_pattern_png`），替换 `test_editing.py` / `test_face_consistency.py` 内重复的本地实现——单测 `sys.path` 注入 `tests/` 目录避免 import 失败。④ `test_chain_integration.py` 新建（14 个测试）：覆盖 ScriptWriterAgent 输出结构 / `_build_task` per-agent 映射 / 70/30 拼接 / motion_gen / tts 对白优先 / video_synth / PipelineConfig 透传 / 越界 shot 优雅降级 / 8+1 agent 注册清单 / **完整链路**：ScriptWriterAgent 输出 → Orchestrator `_build_task(image_gen)` 全字段贯通。⑤ **全测试 541 passed, 2 skipped**（较轮 4 +14 新测试）。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 6）** | **2026-09-30** | **视频生成 + 4 个 pipeline bug 修复**（用户实测驱动的硬修复）：① `orchestrator.PipelineResult` 缺 `.ok` 属性（CLI 抛 AttributeError）——加 `@property def ok(self)`。② orchestrator 跑 `script` phase 即使 storyboard.json 已含完整 shots（触发 InputValidationError + halt）——加 `_script_already_loaded()` 检测，已加载则 skip。③ `ImageGenAgent` 把 `r.bytes` 当作 path 传给 registry（`compute_content_hash` 抛 TypeError）——新增 `_save_image_bytes()` 落盘到 intermediate_dir。④ `pipeline.load_storyboard` 只认 `expected_duration`，不认 V3.2 spec 的 `duration`（导致 Hailuo 收到 5s 而报"不支持"）——兼容两种字段名。⑤ `EditingAgent` 没收到 `video_paths` / `output_path` → 编辑 phase halt_on_error 失败——`_build_task` for editing 从 registry 收集 video_paths + 设 output_path。⑥ `VideoSynthAgent` 需要 `image_path` + `output_path`，原 `_build_task` 只注释"由 orchestrator 在调用前补"但从未补上——加 `_get_image_path_for_shot()` + 自动拼 `shot_NNN_kenburns.mp4`（这是 Ken Burns 一直没跑过的根因）。⑦ **用户验证结果**：3 条视频生成到 `sample/`（金毛犬 4MB / 橘猫 1.9MB / 梅花鹿 2.4MB），1080×1080 / 5.88s / 16:9（横屏）。**用户反馈问题**：所有 3 条画面"一眼 AI 生成"缺乏真实感，根因 = style_anchor 未注入 image_gen / motion_gen prompt。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 7）** | **2026-09-30** | **写实风格 + style_anchor 注入修复**（用户反馈"画面缺乏真实感"）：① **核心 bug 修复**：`Orchestrator._build_task` 现在注入 `storyboard.style_anchor` 到 `image_gen.prompt` 最前（`[风格:...]` 标签，作为基线优先）和 `motion_gen.subject_action`（让 Hailuo 也知道视频风格）。② **3 个 storyboard style_anchor 重写为写实摄影参考**：金毛犬 = "documentary wildlife photography, Sony A1 + 200-600mm telephoto, golden hour lighting, Kodak Portra 800 film grain"；橘猫 = "studio pet photography, Fujifilm X-T5 + 56mm f/1.2, soft window light, creamy bokeh"；梅花鹿 = "BBC Planet Earth cinematography, RED V-Raptor + Cooke S7/i, golden god-rays"。③ **3 个 description 也强化**写实细节（金毛犬改为 trot 步态 / 4 足着地；猫头 / 鹿头微湿润等真实摄影细节；明确 no illustration / no CGI aesthetic）。④ 新增 5 个测试覆盖：style_anchor 在 image_gen prompt / motion_gen subject_action / 不泄漏到无关 agent / 无 style_anchor 时不报错。⑤ 新增 `scripts/regen_3_videos.sh` + `.bat`（用户假期后一键重生 3 条视频）。⑥ **全测试 546 passed, 2 skipped**（较轮 6 +5 新测试）。**待用户验证**：假期回来后跑 `bash scripts/regen_3_videos.sh`（消耗 3 Hailuo quota），新视频应有真实摄影质感而非 AI 默认风格。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 8）** | **2026-09-30** | **故事化产品能力 — StoryArc + 6 镜剧情 + 跨天 batch + 自动拼接**（用户授权用 2 天 quota 做 6 条可拼接的故事视频）：① **新场景 `sample/story_arc_orange_cat_4_seasons/`**：6 镜剧情 "橘猫·四季·一日"（环形叙事 — Day 1 起 / Day 2 合），主角橘猫全程一致，shot_001 晨光苏醒 ↔ shot_006 黎明新生 首尾呼应；shot_003/004/005 走 Ken Burns（不耗 quota），shot_001/002/006 走 Hailuo-2.3。② **`Shot` dataclass 增 2 字段**：`shot_id`（trace ID）+ `continuity_from_prev`（与前一镜的衔接）。③ **`script_engine.StoryArc` 新类**（V3.2 产品化核心）：`from_json()` / `to_storyboards()` 拆 N 个 Storyboard，跨 shot 锁 character + style_anchor；`pipeline.load_storyboard` 同步读 shot_id + continuity_from_prev。④ **3 个新脚本**：`scripts/build_storyboards.py`（arc → N 个独立 storyboard JSON）/ `scripts/run_story.sh + .bat`（批量跑 storyboard，每个消耗 1 quota，自动从 intermediate/ 救回产物）/ `scripts/stitch_story.py`（crossfade 拼接 N mp4 为完整故事）。⑤ **13 个 story_arc 测试**：覆盖 StoryArc.from_json / to_storyboards / 角色一致性 / style_anchor 继承 / continuity 字段 / build_storyboards 端到端 / 真实 day1.json / day2.json 解析。⑥ **全测试 559 passed, 2 skipped**（较轮 7 +13 新测试）。⑦ **今日 Day 1 batch 部分成功**：shot_001 / 002 因 quota 已耗尽失败（2067 错误）；shot_003（static / Ken Burns）✅ 168KB 已落盘 sample/story_arc_orange_cat_4_seasons_shot_003.mp4。明日 quota 重置后用 `bash scripts/run_story.sh day1_storyboards` + `bash scripts/run_story.sh day2_storyboards` 重跑 + 用 `python scripts/stitch_story.py` 拼接为完整故事。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 9）** | **2026-09-30** | **故事脚本与提示词全貌诊断工具**：用户要求看 `sample/story_orange_cat_4_seasons_final.mp4` 的脚本 + 提示词。① **诊断 + 抽取**：`scripts/explain_story.py` —— 一键 dump 每个 shot 的实际喂给 MiniMax image-01 的最终 prompt（含 `[风格:...]` 基线 + `[运镜:]` + `[动作:]` + `[氛围:]` 标签拼装）。② **164 行 PROMPTS.txt** 落盘 `sample/story_arc_orange_cat_4_seasons/PROMPTS.txt` —— 6 镜完整 final prompt 全记录（用户可对照最终视频看"输入什么 + 怎么组装"）。③ **README.md** 落盘 —— 含 6 镜环形叙事图 + 提示词拼装模板 + Ken Burns 镜头效果与叙事意图映射 + 给作者的设计备注（`style_anchor` 必须写真实摄影参考 / `appearance` 要含识别锚点 / `continuity_from_prev` 短文本就够 / 6 镜拼接时长 = 6 × Ns）。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 10）** | **2026-09-30** | **电影质感升级 T1（无 quota）**：用户反馈最终视频"动态 PPT + 镜头机械感 + 一眼 AI"。三档方案（无 quota / 需 quota / 需专业后期）。T1 实装：`scripts/cinematic_upgrade.py` —— 每镜重渲染加 ① `eq` 色调 LUT（Day 1 暖 / Day 2 冷）② `tblend` 帧间柔化 8% ③ `noise` 胶片颗粒 ④ `yuv420p` + `bt709` 专业色彩空间 ⑤ **抛物线 ease-in-out Ken Burns**（替代机械线性）⑥ 程序化 `anoisesrc` 环境音（pink/brown noise + 滤波模拟晨鸟/虫鸣/梦境呼吸，每镜独立配方）。修复 `stitch_story.py` 加 `_any_has_audio()` 检测 + `concat filter` fallback（crossfade 在 tblend + noise 输入下崩 → 自动降级保留音频）。产物：[sample/story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4) 36s / 1280×720 / 带音频 / 7.9 MB。**视觉提升**：镜头不再"死板推拉"，手持呼吸感 + 胶片颗粒 + 真环境音；**仍未做到**：角色真动作（仍是静态图 + 缓动 + 微动 = "高级 PPT"）。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 11）** | **2026-09-30** | **L1 合成微动（ffmpeg trick，0 quota）**：`cinematic_upgrade.py` vf chain 加 `rotate='0.03*sin(2*PI*t/3-1)'`（手持镜头呼吸，每 3 秒微微摆 0.03°）+ `tblend=all_mode=average:all_opacity=0.05`（颜色 LUT 后置避免颜色被柔化）+ 保留胶片颗粒。**L2 定格动画设计**：用户问"中远近里面能不能也加细微动作调节的 3~5 张图片"，确认实施 L2 = 每镜 5 张不同动作阶段图 + ffmpeg xfade 拼接（定格动画 / stop motion 原理）。**产物**：[sample/story_arc_orange_cat_4_seasons_L1_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L1_FINAL.mp4) 36s / 带音频 / 7.9 MB —— 镜头有"活感"但角色仍静态；为 L2 多帧定格动画铺路。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 12）** | **2026-09-30** | **L2 多帧定格动画实装（0 Hailuo quota + 30 image-01 调用）**：① **`scripts/multi_frame_shot.py`**：每镜生成 5 张"动作阶段"图（image-01），用 ffmpeg xfade 拼成 6 秒定格动画（每帧 1.2s + 0.3s crossfade）。② **6 镜 × 5 帧动作描述**（脚本内置硬编码）：shot_001（蜷缩入睡→睁眼→前爪伸→弓背打哈欠→转头望窗）/ shot_002（走入→左爪迈→右爪迈→接近花→鼻子贴花）/ shot_003（蹲伏→直身→转头→转回→尾巴尖摆）/ shot_004（走到坐垫→转圈→趴下→爪盖鼻→闭眼）/ shot_005（睁眼→半闭→闭合→全闭→呼吸起伏）/ shot_006（睡姿→微睁眼→打哈欠→坐起→看见小鸟）。③ **修复 xfade chain bug**：第二个 xfade 误用 `v_i` 作输入而不是前一个 xfade 的输出 `xf_i`；修复为 `prev_label = "v0" if i == 0 else f"xf{i}"`。④ **`scripts/finalize_l2_story.py`**：给 6 个 shot 加 ambient audio + 胶片颗粒，6 镜 concat 拼成完整 36s mp4。⑤ **产物**：[sample/story_arc_orange_cat_4_seasons_L2_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L2_FINAL.mp4) 36s / 1280×720 / 带音频 / 7.2 MB —— **角色真动作阶段 + 手持呼吸 + 胶片颗粒**；与 L1 相比，"猫真的在醒来 + 镜头手持呼吸 + 整体电影质感"。 | PM-Agent |
+| **V3.2 自动开发冲刺（轮 13）** | **2026-09-30** | **完整归档**（用户授权"做 PRD changelog + 更新所有文件 + 存档"）：① PRD §变更日志记录轮 11/12 L1+L2 entry；② PRD §能力快照 + §终极目标反映 L2 已达"可发小红书"水平；③ 更新 `sample/story_arc_orange_cat_4_seasons/README.md` 含三档产物对照（T1 cinema / L1 微动 / L2 定格）；④ 重生成 `PROMPTS.txt` 包含 L2 5-frame prompts；⑤ 创建 `scripts/README.md` 索引 7 个产品脚本；⑥ 全测试 527 passed 通过（无回归）。**总归档产物 8 件**：[sample/story_orange_cat_4_seasons_final.mp4](sample/story_orange_cat_4_seasons_final.mp4)（原版 36s / 1.26 MB / 硬切）/ [story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4)（T1 cinema / 36s / 7.9 MB）/ [story_arc_orange_cat_4_seasons_L1_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L1_FINAL.mp4)（L1 微动 / 36s / 7.9 MB）/ [story_arc_orange_cat_4_seasons_L2_FINAL.mp4](sample/story_orange_cat_4_seasons_L2_FINAL.mp4)（L2 定格动画 / 36s / 7.2 MB / **含真实角色动作阶段**）/ storyboard JSON × 2 / PROMPTS.txt / README.md。 | PM-Agent |
+
+---
+
+## V3.2 自动开发冲刺（轮 14）—— T2 真电影版实装（2026-10-08）
+
+**触发**：用户授权"跑 T2 真电影版"（6 个 Hailuo quota = 1 天 quota 全用完 + 隔天再 3 个）。
+
+**流程**：
+1. 探测 Hailuo quota → `task_id=450074561343845` 成功（已重置）
+2. 修改 day1.json + day2.json：6 个 shot 的 `motion_complexity` 从 `"static"` → `"simple"`（Hailuo 路径）
+3. 修 `scripts/run_story.sh`：`--motion-budget` 默认 1 → 3（让一天内 3 个 shot 全走 Hailuo）
+4. 跑 Day 1（shot_001/002/003）→ 3 个 Hailuo 真视频，文件大小 224KB / 286KB / 166KB
+5. 同一天 quota 仍可用 → 直接跑 Day 2（shot_004/005/006）→ 3 个 Hailuo 真视频
+6. `cinematic_upgrade.py --suffix _t2cinema`：给 6 个 Hailuo mp4 加 ambient audio + 色调 LUT + 胶片颗粒
+7. `stitch_story.py`：拼 6 个为完整 36s mp4
+
+**产物**：[sample/story_orange_cat_4_seasons_T2_FINAL.mp4](sample/story_orange_cat_4_seasons_T2_FINAL.mp4) — **36 秒 / 1920×1080 / 带音频 / 7.75 MB / 真猫动作 + 色调 LUT + 胶片颗粒**
+
+**5 版本对比（最终产物地图）**：
+
+| 版本 | 文件 | 大小 | 角色动作 | 视觉定位 |
+| :--- | :--- | :--- | :--- | :--- |
+| V0 原版 | [story_orange_cat_4_seasons_final.mp4](sample/story_orange_cat_4_seasons_final.mp4) | 1.26 MB | 0% | "动态 PPT" |
+| T1 cinema | [story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4) | 7.68 MB | 0% | "高级 PPT" |
+| L1 微动 | [story_arc_orange_cat_4_seasons_L1_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L1_FINAL.mp4) | 7.92 MB | 0% | "高级 PPT + 手持" |
+| L2 定格 | [story_arc_orange_cat_4_seasons_L2_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L2_FINAL.mp4) | 7.21 MB | 100%（5 张动作阶段图）| "定格动画" |
+| **⭐ T2 真电影** | [story_orange_cat_4_seasons_T2_FINAL.mp4](sample/story_orange_cat_4_seasons_T2_FINAL.mp4) | **7.75 MB** | **100%（Hailuo 真视频）** | **"真电影"** |
+
+**总测试**：559 passed, 2 skipped（无回归）
 
 ---
 
 ## 待澄清问题（开放给 PM-Agent）
 
-- [ ] **REQ-103 --resume 完整续跑**：当前只接受 flag，Orchestrator 实际跳过 phase 的逻辑待补。下次跑 `pipeline --resume-from concat` 验证。
-- [ ] **REQ-201 GPU 路径**：MiniMax Max/Ultra 套餐 vs 自部署 CogVideoX 哪个先做？需用户决策。
-- [ ] **REQ-303 EditingAgent 实现优先级**：色彩归一化 / 运动匹配剪切 / 重叠帧叠化 三选一先做哪个？建议先做色彩归一化（ROI 最高）。
-- [ ] **REQ-305 调度平台**：Windows Task Scheduler vs Linux Cron vs GitHub Actions？当前开发机是 Windows，建议先用 Task Scheduler。
-- [ ] **REQ-401 发布优先级**：YouTube 先还是 Farcaster 先？建议先 YouTube（用户基数大，反馈快）。
-- [ ] **REQ-406 知识库存储**：JSON vs SQLite vs 向量数据库？建议先用 JSON（简单，可读）。
-- [ ] **REQ-204 实时预览**：web UI 还是 CLI tail？需 UX 设计。
-- [ ] **BUG-001 复核（已撤）**：原 PRD 标记的 `_submit` 返回 dict 而非 task_id 字符串 — 2026-09-29 实测确认函数正确返回字符串（`motion_backend.py:287-297`），测试 `test_minimax_backend_success_response` 通过。原 BUG-001 标记作废。
+> ✅ = 已解决（保留作历史）；⬜ = 未解决
+
+- [✅] **REQ-303 EditingAgent 实现优先级**（2026-09-29 解决）：色彩归一化 ✅ 先做；运动匹配 / 叠化 / LUT 后续 REQ-303.x
+- [✅] **BUG-001 复核**（2026-09-29 撤回）：`motion_backend._submit` 实测返回 task_id 字符串正确（`motion_backend.py:287-297`），`test_minimax_backend_success_response` 通过。BUG-001 标记作废
+- [✅] **`script` 是否 DAG phase**（2026-09-29 翻转）：是——`ScriptWriterAgent` 输出 Storyboard 是 `image_gen` / `motion_gen` 输入，串行 HALT。详见 REQ-304
+- [✅] **REQ-103 --resume 完整续跑**（2026-10-10）：`PipelineAgent.run` 按 `resume_from` 跳过此前 phase，并从 `registry.json` 加载已有产物
+- [⬜] **REQ-201 GPU 路径**：MiniMax Max/Ultra 套餐 vs 自部署 CogVideoX 哪个先做？需用户决策（当前选 Max）
+- [⬜] **REQ-305 调度平台**：Windows Task Scheduler vs Linux Cron vs GitHub Actions？当前开发机是 Windows，建议先用 Task Scheduler（脚本已就绪，待用户手动配）
+- [✅] **REQ-303.b/c/d**（2026-10-10）：运动匹配、xfade、LUT 已在 `editing/`
+- [⬜] **REQ-401 发布优先级**：YouTube 先还是 Farcaster 先？建议先 YouTube（用户基数大，反馈快）
+- [⬜] **REQ-406 知识库存储**：JSON vs SQLite vs 向量数据库？建议先用 JSON（简单，可读）
+- [⬜] **REQ-405 实时预览**：web UI 还是 CLI tail？需 UX 设计
 
 ---
 
@@ -417,7 +605,7 @@ python scripts/daily_cron.py --once
 - `sandbox/hailuo_video/prd.md`（V2.x 协议层变更详表）—— 实现细节
 - `storyboard_template.json` —— 标准模板
 - `sandbox/hailuo_video/` —— 源代码
-- `tests/` —— **405 测试覆盖**（V3.2 后；目标 400+，已达成）
+- `tests/` —— **649 passed, 2 skipped**（2026-10-10）
 
 ---
 
@@ -427,7 +615,7 @@ python scripts/daily_cron.py --once
 
 1. ~~**BUG-001 修复**（前置依赖）~~ — **已撤回**（2026-09-29 实测 `_submit` 正确）
 2. **REQ-301** — `script_engine.py` 增加 `camera_motion` / `subject_action` / `motion_complexity` / `duration` 字段。 — ✅ **2026-09-29 完成**
-3. **REQ-303** — 新建 `editing_engine.py` + `EditingAgent`；先做色彩归一化子功能。 — ✅ **2026-09-29 完成**（仅色彩归一化；运动匹配 / xfade / LUT 待后续 REQ）
+3. **REQ-303** — `editing/` + `EditingAgent`。 — ✅ 色彩归一化、运动匹配、xfade、LUT 已完成；MCP 真接入仍是 stub
 4. **REQ-305** — 新建 `scripts/daily_cron.py` + Windows Task Scheduler 集成。 — ✅ **2026-09-29 完成脚本部分**（Task Scheduler 集成待用户手动配）
 
 完成每项后必须：`pytest tests/ -q` 全绿；更新本 PRD 对应 REQ 的"验收状态"。

@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-10-10T07:30:57",
+  "video_count": 2,
+  "videos": [
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_001_v3.mp4",
+      "severity": "ok",
+      "sample_count": 6,
+      "mean_ssim": 0.9241432112514127,
+      "min_ssim": 0.8664484566677588,
+      "mean_color_sim": 0.9781210514691854,
+      "min_color_sim": 0.9745736206224708,
+      "brightness_variance": 9.383926953197524e-06,
+      "motion_variance": 3.249639183317285e-06,
+      "flagged_pairs": [],
+      "warnings": []
+    },
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_001_l2.mp4",
+      "severity": "ok",
+      "sample_count": 6,
+      "mean_ssim": 0.8712823778797585,
+      "min_ssim": 0.7195842419564619,
+      "mean_color_sim": 0.9997253899837386,
+      "min_color_sim": 0.999453390177772,
+      "brightness_variance": 7.673743401696518e-05,
+      "motion_variance": 5.775456756685662e-05,
+      "flagged_pairs": [],
+      "warnings": []
+    }
+  ],
+  "cross_video": {
+    "ok": false,
+    "flagged_pairs": [
+      [
+        1,
+        2,
+        0.04265851786005554
+      ]
+    ],
+    "mean_similarity": 0.04265851786005554,
+    "min_similarity": 0.04265851786005554,
+    "warnings": []
+  }
+}

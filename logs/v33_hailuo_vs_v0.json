@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-10-10T09:08:11",
+  "video_count": 2,
+  "videos": [
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_001_v3.mp4",
+      "severity": "ok",
+      "sample_count": 6,
+      "mean_ssim": 0.9241432112514127,
+      "min_ssim": 0.8664484566677588,
+      "mean_color_sim": 0.9781210514691854,
+      "min_color_sim": 0.9745736206224708,
+      "brightness_variance": 9.383926953197524e-06,
+      "motion_variance": 3.249639183317285e-06,
+      "flagged_pairs": [],
+      "warnings": []
+    },
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_001_hailuo_v33.mp4",
+      "severity": "major",
+      "sample_count": 6,
+      "mean_ssim": 0.6989102557384064,
+      "min_ssim": 0.6329927969422692,
+      "mean_color_sim": 0.9060392739718479,
+      "min_color_sim": 0.840196747279876,
+      "brightness_variance": 0.0009457109224903755,
+      "motion_variance": 0.0006860086974159018,
+      "flagged_pairs": [
+        {
+          "i": 0,
+          "j": 1,
+          "metric": 0.6329927969422692
+        },
+        {
+          "i": 2,
+          "j": 3,
+          "metric": 0.636506685810655
+        }
+      ],
+      "warnings": []
+    }
+  ],
+  "cross_video": {
+    "ok": false,
+    "flagged_pairs": [
+      [
+        1,
+        2,
+        0.5715005228236283
+      ]
+    ],
+    "mean_similarity": 0.5715005228236283,
+    "min_similarity": 0.5715005228236283,
+    "warnings": []
+  }
+}

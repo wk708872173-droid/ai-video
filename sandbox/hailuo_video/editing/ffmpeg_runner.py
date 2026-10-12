@@ -112,3 +112,23 @@ def _probe_dimensions(video_path: str) -> tuple[int, int] | None:
     if w <= 0 or h <= 0 or w > 4096 or h > 4096:
         return None
     return w, h
+
+
+def _probe_has_audio(video_path: str) -> bool:
+    """V3.3 W2：探测视频是否含音频轨（hailuo 真视频无音 → 不能用 acrossfade）。
+
+    Returns:
+        True = 至少 1 条 audio stream；False = 无音轨
+    """
+    exe = _resolve_ffmpeg_exe()
+    args = [exe, "-i", video_path]
+    try:
+        proc = subprocess.run(
+            args, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    stderr = proc.stderr or ""
+    # ffmpeg stderr 形如 "Stream #0:1(und): Audio: aac ..."；无音频则无 Audio: 行
+    return bool(re.search(r"Stream #\d+:\d+.*Audio:", stderr))

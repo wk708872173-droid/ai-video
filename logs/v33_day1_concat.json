@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-10-10T09:53:55",
+  "video_count": 1,
+  "videos": [
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_day1_hailuo_v33_concat.mp4",
+      "severity": "critical",
+      "sample_count": 6,
+      "mean_ssim": 0.39030917796384323,
+      "min_ssim": -0.12668686921054897,
+      "mean_color_sim": 0.8293866892725321,
+      "min_color_sim": 0.5264557443501894,
+      "brightness_variance": 0.008727351141442425,
+      "motion_variance": 0.004067457491322146,
+      "flagged_pairs": [
+        {
+          "i": 0,
+          "j": 1,
+          "metric": 0.5522412146837558
+        },
+        {
+          "i": 2,
+          "j": 3,
+          "metric": -0.12668686921054897
+        },
+        {
+          "i": 3,
+          "j": 4,
+          "metric": 0.4181204369648857
+        },
+        {
+          "i": 4,
+          "j": 5,
+          "metric": 0.3829203976200325
+        },
+        {
+          "i": 2,
+          "j": 3,
+          "metric": 0.5264557443501894
+        }
+      ],
+      "warnings": []
+    }
+  ],
+  "cross_video": {
+    "ok": true,
+    "flagged_pairs": [],
+    "mean_similarity": 1.0
+  }
+}

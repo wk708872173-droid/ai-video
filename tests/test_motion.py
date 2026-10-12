@@ -440,7 +440,7 @@ def test_motion_agent_name_and_all_agents_count():
     # (callables compare by identity). Compare by name instead.
     names = {x.name for x in agents.ALL_AGENTS}
     assert "motion_gen" in names
-    assert len(agents.ALL_AGENTS) == 9   # V3.1 = 7 + motion_gen; V3.2 + EditingAgent = 9
+    assert len(agents.ALL_AGENTS) == 8
 
 
 def test_motion_agent_validate_missing_inputs():

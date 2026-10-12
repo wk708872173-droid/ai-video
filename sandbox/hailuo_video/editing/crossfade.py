@@ -83,7 +83,9 @@ def _xfade_filter_chain(
 
     chain_parts: list[str] = []
     cumulative = durations[0]
-    prev_label = "0"
+    # V3.3 W2：修复 — prev_label 用 scaled label "v00"，避免与 scale chain 冲突
+    # 旧逻辑用 "0"（原始输入），但 scale chain 已消耗 [0:v]，导致悬空 filter + "setsar unconnected"
+    prev_label = "v00"
     for i in range(1, clip_count):
         # offset: 在 cumulative 时刻开始叠化；下一次的 cumulative 加上当前段时长并减 overlap
         offset = cumulative - overlap
@@ -91,7 +93,7 @@ def _xfade_filter_chain(
             offset = 0.0
         next_label = f"v{i:02d}{i+1:02d}" if i < clip_count - 1 else "vout"
         chain_parts.append(
-            f"[{prev_label}][{i}:v]xfade=transition={transition}:duration={overlap:.3f}:offset={offset:.3f}[{next_label}]"
+            f"[{prev_label}][v{i:02d}]xfade=transition={transition}:duration={overlap:.3f}:offset={offset:.3f}[{next_label}]"
         )
         prev_label = next_label
         # 下一次 offset 的累计：cumulative += durations[i] - overlap
@@ -152,16 +154,24 @@ def crossfade_clips(
 
     audio_chain = ""
     if audio_crossfade:
-        # acrossfade: [0:a][1:a]acrossfade=d=DURATION[a01];[a01][2:a]acrossfade=d=DURATION[aout]
-        a_parts: list[str] = []
-        prev_a = "0:a"
-        for i in range(1, len(video_paths)):
-            next_a = f"a{i:02d}{i+1:02d}" if i < len(video_paths) - 1 else "aout"
-            a_parts.append(
-                f"[{prev_a}][{i}:a]acrossfade=d={overlap_seconds:.3f}[{next_a}]"
-            )
-            prev_a = next_a
-        audio_chain = "".join(p + ";" for p in a_parts)
+        # V3.3 W2：探测所有输入是否有音频轨 → 无音频时强制跳过 acrossfade
+        # 否则 ffmpeg filter graph 报"matches no streams"（hailuo 真视频无音轨）
+        has_any_audio = any(
+            ffmpeg_runner._probe_has_audio(str(p)) for p in video_paths
+        )
+        if not has_any_audio:
+            audio_crossfade = False  # 退化到纯视频叠化
+        else:
+            # acrossfade: [0:a][1:a]acrossfade=d=DURATION[a01];[a01][2:a]acrossfade=d=DURATION[aout]
+            a_parts: list[str] = []
+            prev_a = "0:a"
+            for i in range(1, len(video_paths)):
+                next_a = f"a{i:02d}{i+1:02d}" if i < len(video_paths) - 1 else "aout"
+                a_parts.append(
+                    f"[{prev_a}][{i}:a]acrossfade=d={overlap_seconds:.3f}[{next_a}]"
+                )
+                prev_a = next_a
+            audio_chain = "".join(p + ";" for p in a_parts)
 
     full_filter = scale_chain + xfade_chain
     if audio_chain:

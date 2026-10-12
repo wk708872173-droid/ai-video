@@ -1,0 +1,100 @@
+{
+  "generated_at": "2026-10-10T09:45:03",
+  "video_count": 3,
+  "videos": [
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_001_hailuo_v33.mp4",
+      "severity": "major",
+      "sample_count": 6,
+      "mean_ssim": 0.6989102557384064,
+      "min_ssim": 0.6329927969422692,
+      "mean_color_sim": 0.9060392739718479,
+      "min_color_sim": 0.840196747279876,
+      "brightness_variance": 0.0009457109224903755,
+      "motion_variance": 0.0006860086974159018,
+      "flagged_pairs": [
+        {
+          "i": 0,
+          "j": 1,
+          "metric": 0.6329927969422692
+        },
+        {
+          "i": 2,
+          "j": 3,
+          "metric": 0.636506685810655
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_002_hailuo_v33.mp4",
+      "severity": "critical",
+      "sample_count": 6,
+      "mean_ssim": 0.5071025569895857,
+      "min_ssim": 0.3995812806981995,
+      "mean_color_sim": 0.9687710608803968,
+      "min_color_sim": 0.9647783761718255,
+      "brightness_variance": 4.083597083089489e-05,
+      "motion_variance": 1.828246037806986e-05,
+      "flagged_pairs": [
+        {
+          "i": 0,
+          "j": 1,
+          "metric": 0.4965729024677766
+        },
+        {
+          "i": 1,
+          "j": 2,
+          "metric": 0.5980473222900983
+        },
+        {
+          "i": 2,
+          "j": 3,
+          "metric": 0.41816718912649337
+        },
+        {
+          "i": 3,
+          "j": 4,
+          "metric": 0.3995812806981995
+        },
+        {
+          "i": 4,
+          "j": 5,
+          "metric": 0.623144090365361
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "path": "sample\\story_arc_orange_cat_4_seasons_shot_003_hailuo_v33.mp4",
+      "severity": "ok",
+      "sample_count": 6,
+      "mean_ssim": 0.9946228722189858,
+      "min_ssim": 0.9927398731850884,
+      "mean_color_sim": 0.9877613769295444,
+      "min_color_sim": 0.9858159264509673,
+      "brightness_variance": 2.0782343778765347e-07,
+      "motion_variance": 6.401878923051982e-08,
+      "flagged_pairs": [],
+      "warnings": []
+    }
+  ],
+  "cross_video": {
+    "ok": false,
+    "flagged_pairs": [
+      [
+        1,
+        2,
+        0.6355688720574243
+      ],
+      [
+        2,
+        3,
+        0.5483812965176251
+      ]
+    ],
+    "mean_similarity": 0.5919750842875247,
+    "min_similarity": 0.5483812965176251,
+    "warnings": []
+  }
+}

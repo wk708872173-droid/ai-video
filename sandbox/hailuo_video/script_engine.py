@@ -195,6 +195,7 @@ class Shot:
     scene_id: int
     shot_type: str
     description: str
+    shot_id: str = ""                     # V3.2 自动开发冲刺（轮 8）：story_id 形式如 "shot_001"
     characters: list[str] = field(default_factory=list)
     dialogue: str = ""
     voiceover: str = ""
@@ -208,6 +209,8 @@ class Shot:
                                                 #   static  → Ken Burns 即可（已有 video_engine）
                                                 #   simple   → 调用 MotionGenerationAgent（简单运动）
                                                 #   complex  → 跳过（需 GPU + 真 AI 视频模型）
+    # V3.2 自动开发冲刺（轮 8）：continuity_from_prev — 故事弧线里与前一镜的衔接（自由文本描述）
+    continuity_from_prev: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -231,6 +234,155 @@ class Storyboard:
             "style_anchor": self.style_anchor,
             "char_sheet_anchor": self.char_sheet_anchor,
         }
+
+
+# ---------- StoryArc（V3.2 自动开发冲刺轮 8）----------
+
+@dataclass
+class StoryArc:
+    """多镜故事弧线（V3.2 产品化能力）。
+
+    设计意图：
+      - 一个 StoryArc = N 个 shot 组成完整叙事
+      - 每个 shot 可独立生成（每次烧 1 Hailuo quota）
+      - 跨 shot 角色一致性（character + style_anchor 锁定）
+      - 内置 continuity_from_prev 字段帮助下一镜理解前一镜
+
+    用法：
+      arc = StoryArc.from_json("story.json")            # 读 story.json
+      storyboards = arc.to_storyboards()                  # 拆为 N 个 Storyboard
+      # 每个 Storyboard 喂 pipeline 跑 1 次，产物拼接成完整故事
+    """
+    title: str
+    style_anchor: str
+    characters: list[Character] = field(default_factory=list)
+    scenes: list[SceneSpec] = field(default_factory=list)
+    shots: list[Shot] = field(default_factory=list)
+    arc_metadata: dict[str, Any] = field(default_factory=dict)   # 弧线级元数据（duration_target / genre 等）
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StoryArc":
+        """从 dict 构造（兼容 1 个 story.json 含全部 shots 的格式）。
+
+        与 Storyboard 的 _parse_shots_payload（解析 LLM 输出）不同——这里直接
+        接受已是 dict 列表的 shots，不重新走 JSON 抽取。
+        """
+        characters = [
+            Character(
+                name=str(c.get("name", "")),
+                appearance=str(c.get("appearance", "")),
+                personality=list(c.get("personality", []) or []),
+                color_palette=list(c.get("color_palette", []) or []),
+            )
+            for c in (data.get("characters") or []) if isinstance(c, dict)
+        ]
+        scenes = [
+            SceneSpec(
+                id=int(s.get("id", i + 1)),
+                location=str(s.get("location", "")),
+                atmosphere=str(s.get("atmosphere", "")),
+                key_elements=list(s.get("key_elements", []) or []),
+            )
+            for i, s in enumerate(data.get("scenes") or []) if isinstance(s, dict)
+        ]
+        shots = [_shot_from_dict(s, i) for i, s in enumerate(data.get("shots") or []) if isinstance(s, dict)]
+        return cls(
+            title=str(data.get("title", "story")),
+            style_anchor=str(data.get("style_anchor", "")),
+            characters=characters,
+            scenes=scenes,
+            shots=shots,
+            arc_metadata=dict(data.get("arc_metadata") or {}),
+        )
+
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "StoryArc":
+        """读 story.json（顶层含全部 shots）。"""
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+    def to_storyboards(self) -> list["Storyboard"]:
+        """把 StoryArc 拆为 N 个 Storyboard（每个 Storyboard = 1 shot = 1 pipeline run）。
+
+        每个子 Storyboard 继承：
+          - 全局 style_anchor（基线一致性）
+          - 全局 characters / scenes
+          - 但 shots 只含当前 shot
+
+        返回 list[Storyboard]，顺序与原 StoryArc.shots 一致。
+        """
+        return [
+            Storyboard(
+                title=f"{self.title} · {shot.shot_id}",
+                characters=list(self.characters),
+                scenes=list(self.scenes),
+                shots=[shot],
+                style_anchor=self.style_anchor,
+                char_sheet_anchor="",   # 角色外观已在 characters 里；不再额外覆盖
+            )
+            for shot in self.shots
+        ]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "style_anchor": self.style_anchor,
+            "characters": [c.to_dict() for c in self.characters],
+            "scenes": [s.to_dict() for s in self.scenes],
+            "shots": [
+                {
+                    "index": i + 1,
+                    "shot_id": s.shot_id,
+                    "scene_id": s.scene_id,
+                    "shot_type": s.shot_type,
+                    "description": s.description,
+                    "characters": s.characters,
+                    "dialogue": s.dialogue,
+                    "voiceover": s.voiceover,
+                    "mood": s.mood,
+                    "camera_motion": s.camera_motion,
+                    "subject_action": s.subject_action,
+                    "duration": s.expected_duration,
+                    "motion_complexity": s.motion_complexity,
+                    "continuity_from_prev": getattr(s, "continuity_from_prev", ""),
+                }
+                for i, s in enumerate(self.shots)
+            ],
+            "arc_metadata": dict(self.arc_metadata),
+        }
+
+
+def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
+    """V3.2 自动开发冲刺（轮 8）：从 dict 直接构造 Shot（不走 LLM 输出解析）。
+
+    与 _parse_shots_payload 不同：这里是 JSON 已解析好的 list[dict]，不再走
+    JSON 抽取 / fenced code block 解析。校验比 LLM 输出更宽松。
+    """
+    motion_complexity_raw = str(s.get("motion_complexity", "static") or "static")
+    if motion_complexity_raw not in ("static", "simple", "complex"):
+        motion_complexity_raw = "static"  # storyboard.json 不强制校验（同 pipeline.load_storyboard）
+    subject_action = str(s.get("subject_action", "") or "")
+    duration_raw = s.get("duration", s.get("expected_duration", 5.0))
+    try:
+        duration = float(duration_raw) if duration_raw not in (None, "") else 5.0
+    except (TypeError, ValueError):
+        duration = 5.0
+    return Shot(
+        index=int(s.get("index", idx + 1)),
+        scene_id=int(s.get("scene_id", 0)),
+        shot_type=str(s.get("shot_type", "中景")),
+        description=str(s.get("description", "")),
+        shot_id=str(s.get("shot_id", "") or ""),
+        characters=list(s.get("characters", []) or []),
+        dialogue=str(s.get("dialogue", "")),
+        voiceover=str(s.get("voiceover", "")),
+        mood=list(s.get("mood", []) or []),
+        camera_motion=str(s.get("camera_motion", "")),
+        subject_action=subject_action,
+        expected_duration=duration,
+        motion_complexity=motion_complexity_raw,
+        continuity_from_prev=str(s.get("continuity_from_prev", "") or ""),
+    )
 
 
 # ---------- JSON 解析 ----------
@@ -347,6 +499,8 @@ def _parse_shots_payload(text: str, n_shots: int) -> list[Shot]:
             subject_action=subject_action,
             expected_duration=duration,
             motion_complexity=motion_complexity_raw,
+            # V3.2 自动开发冲刺（轮 8）：故事弧线字段
+            continuity_from_prev=str(s.get("continuity_from_prev", "") or ""),
         ))
     if len(out) != n_shots:
         raise LLMError(

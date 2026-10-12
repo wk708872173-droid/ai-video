@@ -734,3 +734,77 @@ def test_editing_agent_execute_unknown_mode_returns_error(fake_runner, tmp_path)
     })
     assert result.ok is False
     assert "unknown mode" in result.error
+
+
+# ---------- V3.3 W2：crossfade 修复回归测试 ----------
+
+def test_probe_has_audio_true_when_audio_stream_exists(fake_runner, monkeypatch):
+    """_probe_has_audio 应正确识别 stderr 中的 Audio: 行。"""
+    from hailuo_video.editing import ffmpeg_runner
+
+    class _FakeProc:
+        stderr = "Stream #0:1(und): Audio: aac, 44100 Hz, stereo"
+    monkeypatch.setattr(ffmpeg_runner.subprocess, "run", lambda *a, **kw: _FakeProc())
+    assert ffmpeg_runner._probe_has_audio("/tmp/whatever.mp4") is True
+
+
+def test_probe_has_audio_false_when_no_audio_stream(fake_runner):
+    """hailuo 短片无音频轨 → _probe_has_audio 应返 False。"""
+    from hailuo_video.editing.ffmpeg_runner import _probe_has_audio
+    # 不 mock：传真正不存在的文件 → ffmpeg 报错，stderr 无 Audio:
+    result = _probe_has_audio("/tmp/_no_such_file_xyz.mp4")
+    assert result is False
+
+
+def test_crossfade_clips_skips_audio_when_inputs_have_no_audio(
+    fake_runner, tmp_path, monkeypatch
+):
+    """V3.3 W2：audio_crossfade=True 但输入无音频 → 自动跳过 acrossfade。
+
+    背景：旧实现无论输入有无音频都构造 acrossfade filter，hailuo 短片（无音轨）
+    会触发 ffmpeg "matches no streams" 错误，导致 editing phase FAIL。
+    """
+    from hailuo_video.editing import crossfade as cf
+
+    monkeypatch.setattr(cf.ffmpeg_runner, "_probe_has_audio", lambda _: False)
+    monkeypatch.setattr(cf._editing_pkg, "_probe_duration", lambda _: 5.0)
+    monkeypatch.setattr(cf._editing_pkg, "_probe_dimensions", lambda _: (1920, 1080))
+
+    v1 = tmp_path / "a.mp4"; v1.write_bytes(b"x")
+    v2 = tmp_path / "b.mp4"; v2.write_bytes(b"x")
+    out = tmp_path / "out.mp4"
+
+    # audio_crossfade=True（默认）但无音频 → 应自动退化，filter chain 不含 acrossfade
+    result = cf.crossfade_clips(
+        video_paths=[str(v1), str(v2)],
+        output_path=str(out),
+        transition="fade",
+        overlap_seconds=0.25,
+        audio_crossfade=True,
+    )
+    assert "acrossfade" not in result.ffmpeg_filter, (
+        f"无音频时 filter chain 不应包含 acrossfade：{result.ffmpeg_filter}"
+    )
+
+
+def test_xfade_filter_chain_uses_scaled_labels():
+    """V3.3 W2：_xfade_filter_chain 第一段 prev_label 必须是 'v00'（不是 '0'）。
+
+    背景：scale chain 输出 [v00] / [v01]，旧代码用 [0][1:v] 引用原始输入，
+    但 [0:v] 已被 scale 消耗，导致 ffmpeg "setsar unconnected" 报错。
+    """
+    from hailuo_video.editing.crossfade import _xfade_filter_chain
+
+    chain = _xfade_filter_chain(
+        clip_count=2, durations=[5.0, 5.0], transition="fade", overlap=0.25,
+    )
+    # 第一段必须用 [v00][v01]，不是 [0][1:v]
+    assert "[v00][v01]" in chain, f"期望 scaled label v00/v01，实际：{chain}"
+    assert "[0][1:v]" not in chain, f"不应引用未定义 label [0]：{chain}"
+    # 3 镜：链式衔接 v00→v0102→vout
+    chain3 = _xfade_filter_chain(
+        clip_count=3, durations=[5.0, 5.0, 5.0], transition="fade", overlap=0.25,
+    )
+    assert "[v00][v01]" in chain3
+    assert "[v0102][v02]" in chain3
+    assert "[vout]" in chain3

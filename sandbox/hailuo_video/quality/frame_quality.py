@@ -29,6 +29,7 @@ from hailuo_video.quality.consistency import _cosine_sim, _variance
 class FrameQualityReport:
     """V3.3 W1：单视频帧级质量度量报告。"""
     video_path: str = ""
+    profile: str = "stop_motion"          # V3.3 W2：所用阈值档（stop_motion / motion）
     sample_count: int = 0                    # 实际采样帧数
     per_pair_ssim: list[float] = field(default_factory=list)       # 0-1 lite-SSIM
     per_pair_color_sim: list[float] = field(default_factory=list)  # 0-1 cosine of color hist
@@ -68,7 +69,7 @@ class FrameQualityReport:
         return "critical"
 
     def format(self) -> str:
-        lines = [f"[video] {self.video_path} ({self.sample_count} 帧采样)"]
+        lines = [f"[video] {self.video_path} ({self.sample_count} 帧采样, profile={self.profile})"]
         lines.append(f"  mean lite-SSIM: {self.mean_ssim:.3f}  min: {self.min_ssim:.3f}（阈值 {DEFAULT_SSIM_THRESHOLD}）")
         lines.append(f"  mean 色差 cosine: {self.mean_color_sim:.3f}  min: {self.min_color_sim:.3f}（阈值 {DEFAULT_SSIM_THRESHOLD}）")
         lines.append(f"  亮度方差: {self.brightness_variance:.4f}（阈值 {DEFAULT_BRIGHTNESS_VAR_THRESHOLD}）")
@@ -91,6 +92,35 @@ DEFAULT_COLOR_THRESHOLD = 0.65          # 帧间色差 cosine < 此值 → flagg
 DEFAULT_BRIGHTNESS_VAR_THRESHOLD = 0.15 # 亮度方差 > 此值 → 忽明忽暗
 DEFAULT_MOTION_VAR_THRESHOLD = 0.04     # 运动方差 > 此值 → 卡顿/闪烁
 DEFAULT_SAMPLE_FRAMES = 8               # 默认采样帧数（视频长 ~6s 取 8 帧合理）
+
+# ---------- V3.3 W2：profile 分档（解决 L1 对 hailuo 反指） ----------
+
+# 场景对照（probe_motion_variance.py 实测 2026-10-12）：
+#   stop_motion (L2 stop-motion, 5 帧 xfade)：SSIM 高 ~0.92，全过阈值；保留现默认
+#   motion (Hailuo 真运动 24fps)：SSIM 低 (猫画境，座 0.395–0.997)
+#     - 真运动 (60%): mean_ssim ∈ [0.40, 0.90]  → 不应 flag
+#     - 静态 (40%): mean_ssim ∈ [0.99, 1.00]    → 必须报警"无运动"
+#
+# session_20261010 §3 实测：
+#   shot_001 真运动: mean_ssim=0.762 min_ssim=0.688  → 现默认 ok（凑巧）
+#   shot_002 真运动: mean_ssim=0.563 min_ssim=0.395  → 现默认 critical（误报）
+#   shot_003 静态:   mean_ssim=0.997 min_ssim=0.995  → 现默认 ok（漏报）
+PROFILE_PRESETS = {
+    "stop_motion": {
+        "ssim_threshold": 0.65,
+        "color_threshold": 0.65,
+        "brightness_var_threshold": 0.15,
+        "motion_var_threshold": 0.04,
+        "static_min_ssim": None,      # 不检查"无运动"
+    },
+    "motion": {
+        "ssim_threshold": 0.35,       # 真运动 min_ssim 可低至 0.40，阈值 0.35 留 buffer
+        "color_threshold": 0.55,      # 色差阈值同步降
+        "brightness_var_threshold": 0.20,
+        "motion_var_threshold": 0.04,
+        "static_min_ssim": 0.99,      # 全帧 SSIM > 0.99 = 几乎静止 → warning
+    },
+}
 
 
 # ---------- 抽帧（ffmpeg） ----------
@@ -245,10 +275,11 @@ def compute_frame_quality(
     video_path: str | Path,
     *,
     sample_count: int = DEFAULT_SAMPLE_FRAMES,
-    ssim_threshold: float = DEFAULT_SSIM_THRESHOLD,
-    color_threshold: float = DEFAULT_COLOR_THRESHOLD,
-    brightness_var_threshold: float = DEFAULT_BRIGHTNESS_VAR_THRESHOLD,
-    motion_var_threshold: float = DEFAULT_MOTION_VAR_THRESHOLD,
+    ssim_threshold: float | None = None,
+    color_threshold: float | None = None,
+    brightness_var_threshold: float | None = None,
+    motion_var_threshold: float | None = None,
+    profile: str = "stop_motion",
     tmp_dir: Path | None = None,
 ) -> FrameQualityReport:
     """V3.3 W1：单视频帧级质量度量（0 依赖；ffmpeg + PIL）。
@@ -256,25 +287,46 @@ def compute_frame_quality(
     Args:
         video_path: 输入 mp4
         sample_count: 采样帧数（默认 8）
-        ssim_threshold: lite-SSIM flag 阈值
-        color_threshold: 帧间色差 flag 阈值
-        brightness_var_threshold: 亮度方差 flag 阈值
-        motion_var_threshold: 运动方差 flag 阈值
+        ssim_threshold: lite-SSIM flag 阈值（None = 用 profile 默认值）
+        color_threshold: 帧间色差 flag 阈值（None = 用 profile 默认值）
+        brightness_var_threshold: 亮度方差 flag 阈值（None = 用 profile 默认值）
+        motion_var_threshold: 运动方差 flag 阈值（None = 用 profile 默认值）
+        profile: 阈值档位（"stop_motion" 默认 | "motion" 给 hailuo 真运动）
         tmp_dir: 抽帧临时目录（None = 视频旁 _frames/）
 
     Returns:
-        FrameQualityReport
+        FrameQualityReport（含 rep.report.profile = "stop_motion" / "motion"）
 
     Raises:
         FileNotFoundError: 视频不存在
         RuntimeError: ffmpeg 失败（依赖 imageio-ffmpeg）
 
     行为：
-        - sample_count < 2 → warning（无法计算 pair）
+        - profile 参数选择阈值组（profile="motion" 为 hailuo 真运动优化）
+        - 显式传 ssim_threshold 等会**覆盖** profile 默认值
+        - profile="motion" + mean_ssim > static_min_ssim → warning "无运动"
         - 任一维度超阈值 → flagged_pairs 加 (i, j, metric)
         - 不抛错；warnings 字段收集可恢复问题
     """
-    rep = FrameQualityReport(video_path=str(video_path))
+    # profile 解析：未知档位 → 退回 stop_motion + warning
+    if profile not in PROFILE_PRESETS:
+        warnings_extra = [f"未知 profile={profile!r}，退回 stop_motion 默认值"]
+        profile = "stop_motion"
+    else:
+        warnings_extra = []
+    preset = PROFILE_PRESETS[profile]
+    ssim_threshold = preset["ssim_threshold"] if ssim_threshold is None else ssim_threshold
+    color_threshold = preset["color_threshold"] if color_threshold is None else color_threshold
+    brightness_var_threshold = (
+        preset["brightness_var_threshold"] if brightness_var_threshold is None else brightness_var_threshold
+    )
+    motion_var_threshold = (
+        preset["motion_var_threshold"] if motion_var_threshold is None else motion_var_threshold
+    )
+    static_min_ssim = preset["static_min_ssim"]  # None 表示不检查
+
+    rep = FrameQualityReport(video_path=str(video_path), profile=profile)
+    rep.warnings.extend(warnings_extra)
 
     try:
         frames = extract_keyframes(video_path, sample_count=sample_count, tmp_dir=tmp_dir)
@@ -329,6 +381,13 @@ def compute_frame_quality(
         rep.warnings.append(
             f"运动方差 {rep.motion_variance:.4f} > {motion_var_threshold}（镜头闪烁/卡顿）"
         )
+    # V3.3 W2：profile=motion 专用 — mean_ssim 极高（> static_min_ssim）说明视频几乎静止
+    if static_min_ssim is not None and rep.sample_count >= 2:
+        if rep.min_ssim > static_min_ssim:
+            rep.warnings.append(
+                f"profile=motion 但视频帧间 min_ssim={rep.min_ssim:.3f} > "
+                f"{static_min_ssim}（几乎无运动，可能 hailuo 生成失败 / 静态帧）"
+            )
 
     return rep
 
@@ -339,6 +398,7 @@ __all__ = [
     "DEFAULT_MOTION_VAR_THRESHOLD",
     "DEFAULT_SAMPLE_FRAMES",
     "DEFAULT_SSIM_THRESHOLD",
+    "PROFILE_PRESETS",
     "FrameQualityReport",
     "_frame_brightness",
     "_frame_color_hist24",
