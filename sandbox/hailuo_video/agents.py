@@ -713,6 +713,8 @@ class MotionGenerationAgent(Agent):
                 duration=task.get("duration", 6),
                 resolution=task.get("resolution", "1080P"),
                 output_path=task["output_path"],
+                # V3.4 W3 hotfix：传 first_frame_image 走 I2V 路径（否则 T2V 自由发挥 → "小黄变猫"）
+                first_frame_image=task.get("first_frame_image") or "",
             )
             if motion_result.status in ("ok", "submitted"):
                 artifacts = [Artifact(

@@ -414,10 +414,20 @@ class PipelineAgent:
             base_subject_action = getattr(shot, "subject_action", "") or description
             task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"
             task["style_anchor"] = style_anchor       # 也单独传，方便后端读取
-            # Shot dataclass 用 expected_duration；motion_gen backend 接收 duration
+            # V3.4 W3 hotfix（2026-10-13）：motion_gen 必须传 image_path 给 hailuo 作 first_frame_image
+            #   旧行为：task 缺 image_path → hailuo 走 T2V（纯文本）→ 自由发挥"小黄=橘猫"
+            #   新行为：image_path + first_frame_image 都传 → hailuo 走 I2V → 主体锁定
+            # V3.3 「小黄变猫」事件根因（V3.4 W3 已部分修：style_anchor 守卫词 + 删 concept art）
+            image_path = self._get_image_path_for_shot(ctx, shot_idx)
+            task["image_path"] = image_path
+            task["first_frame_image"] = image_path  # motion_backend 走 I2V
             task["duration"] = int(getattr(shot, "expected_duration", 6.0) or 6.0)
             task["resolution"] = "1080P"
             task["shot_id"] = shot_idx
+            task["output_path"] = str(
+                Path(str(task.get("intermediate_dir", "./intermediate")))
+                / f"shot_{shot_idx:03d}_motion.mp4"
+            )
         elif agent_name == "video_synth":
             # V3.2 自动开发冲刺（轮 6）：image_path 来自 image_gen artifact；output_path 写到 intermediate_dir
             image_path = self._get_image_path_for_shot(ctx, shot_idx)

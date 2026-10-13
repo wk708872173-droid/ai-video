@@ -308,3 +308,28 @@ def test_orchestrator_motion_gen_no_unreachable_else_branch():
     # 期望 base_subject_action 出现在 f"[风格:{style_anchor}]..." 上下文
     assert 'base_subject_action = getattr(shot, "subject_action", "") or description' in motion_section
     assert 'task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"' in motion_section
+
+
+def test_orchestrator_motion_gen_task_includes_first_frame_image():
+    """V3.4 W3 hotfix（2026-10-13）：motion_gen task 必须含 first_frame_image 让 hailuo 走 I2V。
+
+    背景：「小黄变猫」事件根因 — motion_gen task 缺 image_path / first_frame_image，
+    → hailuo 走 T2V（纯文本）→ 模型自由发挥"小黄"歧义 → 输出橘猫。
+    修复：motion_gen path 必须传 first_frame_image 强制走 I2V。
+    """
+    orch_src = (SANDBOX / "hailuo_video" / "orchestrator.py").read_text(encoding="utf-8")
+    # 1) orchestrator.py 必须有 task["first_frame_image"] = image_path
+    motion_section = orch_src[orch_src.find('agent_name == "motion_gen"'):]
+    motion_section = motion_section[:motion_section.find('elif agent_name')]
+    assert 'task["first_frame_image"]' in motion_section, (
+        "V3.4 W3 hotfix：orchestrator motion_gen path 必须设置 task['first_frame_image']"
+        " — 否则 hailuo 走 T2V，'小黄变猫'事件重演"
+    )
+
+    # 2) agents.py MotionGenerationAgent 必须把 first_frame_image 传给 backend.generate
+    agents_src = (SANDBOX / "hailuo_video" / "agents.py").read_text(encoding="utf-8")
+    motion_agent_section = agents_src[agents_src.find('MotionGenerationAgent(Agent)'):]
+    motion_agent_section = motion_agent_section[:motion_agent_section.find('# ---------- 8 Agent')]
+    assert "first_frame_image=task.get" in motion_agent_section, (
+        "V3.4 W3 hotfix：MotionGenerationAgent 必须把 task['first_frame_image'] 传给 backend.generate"
+    )

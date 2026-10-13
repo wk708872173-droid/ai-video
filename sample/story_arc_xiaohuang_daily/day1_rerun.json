@@ -1,0 +1,130 @@
+{
+  "title": "中华田园犬·奶黄幼犬·治愈一日 (Day 1 · 起) [RERUN 2026-10-13]",
+  "characters": [
+    {
+      "name": "幼犬",
+      "appearance": "中华田园犬幼犬约 6 个月大，毛色温暖奶黄带浅米色渐变至腹部，短毛光滑略带绒，立耳微前倾，杏色眼睛清澈带瞳孔反光，黑色湿润鼻头，尾巴中等长度微卷向上翘，整体体态轻盈健康约 5 公斤，四肢修长但不纤细，胸前白斑呈小条状",
+      "personality": [
+        "治愈",
+        "好奇",
+        "温顺"
+      ],
+      "color_palette": [
+        "奶黄",
+        "浅米",
+        "杏色",
+        "白"
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": 1,
+      "location": "老宅木地板窗边",
+      "atmosphere": "清晨斜阳，尘埃在光柱中漂浮",
+      "key_elements": [
+        "旧木地板",
+        "白棉布坐垫",
+        "木格窗框",
+        "窗帘半卷",
+        "窗外鸟鸣"
+      ]
+    },
+    {
+      "id": 2,
+      "location": "郊区草地与落叶",
+      "atmosphere": "上午阳光斑驳",
+      "key_elements": [
+        "绿色草地",
+        "枯黄落叶",
+        "低矮灌木",
+        "微风"
+      ]
+    },
+    {
+      "id": 3,
+      "location": "老院石阶门口",
+      "atmosphere": "傍晚金色时刻",
+      "key_elements": [
+        "青石板台阶",
+        "木门",
+        "夕阳橙红",
+        "远山剪影"
+      ]
+    }
+  ],
+  "shots": [
+    {
+      "index": 1,
+      "scene_id": 1,
+      "shot_type": "中景",
+      "description": "清晨斜阳从老宅木格窗洒入，一只 6 个月大的中华田园犬幼犬（毛色温暖奶黄带浅米色渐变，立耳微前倾，杏色清澈眼睛带清晨阳光反射，胸前白斑小条状）蜷缩在白棉布坐垫上，整个人慵懒地伸了一个大懒腰——前爪向前伸展，背部弓起，然后缓缓睁眼转头望向窗外鸟鸣。窗外可见树枝轻晃。强调自然光影在幼犬绒毛上的真实渐变。镜头从窗边缓慢推近聚焦幼犬脸部。",
+      "shot_id": "shot_001_rerun",
+      "characters": [
+        "幼犬"
+      ],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "温柔",
+        "慵懒",
+        "宁静",
+        "治愈"
+      ],
+      "camera_motion": "缓慢推近",
+      "time": "",
+      "subject_action": "幼犬慵懒伸懒腰后缓缓转头望向窗外",
+      "expected_duration": 6.0,
+      "motion_complexity": "simple",
+      "continuity_from_prev": "STORY OPENING — 钩子镜，建立主角与老宅场景"
+    },
+    {
+      "index": 2,
+      "scene_id": 2,
+      "shot_type": "近景",
+      "description": "上午阳光透过郊区草地上方树叶斑驳洒下，一只 6 个月大的中华田园犬幼犬（毛色奶黄带浅米，立耳竖起，鼻头微湿）在绿色草地上追逐一片枯黄落叶——小跑、停顿、歪头看落叶、再冲刺、用力甩头。落叶在风中飘动。强调幼犬绒毛在阳光下的真实光泽与运动中的肌肉线条。镜头低角度跟拍跟随小狗奔跑方向。",
+      "shot_id": "shot_002_rerun",
+      "characters": [
+        "幼犬"
+      ],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "活力",
+        "快乐",
+        "好奇"
+      ],
+      "camera_motion": "跟拍-主体运动",
+      "time": "",
+      "subject_action": "幼犬在草地上追逐落叶并用力甩头",
+      "expected_duration": 6.0,
+      "motion_complexity": "complex",
+      "continuity_from_prev": "中段高潮镜，建立运动与活力"
+    },
+    {
+      "index": 3,
+      "scene_id": 3,
+      "shot_type": "中景",
+      "description": "傍晚金色时刻，老宅青石板台阶与木门前，一只 6 个月大的中华田园犬幼犬（毛色奶黄，立耳竖起微前倾，杏色眼睛带夕阳反射）安静地蹲坐在门口最高台阶上，回头望向镜头方向，眼神温柔。背景可见远山剪影与橙红晚霞。强调毛绒感与光影渐变。镜头从地面缓慢上摇至小狗脸部。",
+      "shot_id": "shot_003_rerun",
+      "characters": [
+        "幼犬"
+      ],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "治愈",
+        "等待",
+        "温柔"
+      ],
+      "camera_motion": "俯仰-下到上",
+      "time": "",
+      "subject_action": "幼犬安静蹲坐在门口最高台阶，回头温柔望镜头",
+      "expected_duration": 6.0,
+      "motion_complexity": "simple",
+      "continuity_from_prev": "结尾治愈镜，与 shot_001 形成一日首尾呼应"
+    }
+  ],
+  "style_anchor": "photorealistic cinematic pet documentary, shot on ARRI Alexa Mini LF + Cooke S7/i Full Frame Plus lenses, 24fps, soft natural daylight with atmospheric haze, photorealistic Chinese rural dog fur with individual hair detail visible including绒毛真实渐变, NO illustration style, NO CGI aesthetic, NO anime, NO cartoon, NO watercolor, NO stylized characters, NO unrealistic large anime eyes, naturalistic warm color grading reminiscent of Japanese rural cinema (是枝裕和风格), shallow depth of field with creamy bokeh on background, subtle film grain, golden hour lighting, real-life rural China aesthetic, photojournalistic authenticity",
+  "char_sheet_anchor": ""
+}
