@@ -54,35 +54,29 @@ ffmpeg -y -ss 1 -i \
 - ❌ 仍是猫 → 停止，hailuo API 持续不稳，需换 prompt 策略（如 "tutorial dog video" "shiba inu puppy" 英文 prompt 试）
 
 ### Step 4: 用 lib_ffmpeg 重拼最终版（覆盖 final/）
-```python
-# scripts/_finalize_with_rerun.py（明天写，本次只说明）
-import sys; sys.path.insert(0, 'scripts')
-from lib_ffmpeg import apply_cinematic_lut_by_shot_id, to_vertical, concat_files
+```bash
+# 一行命令搞定（V3.4 W3 hotfix 提供）
+PYTHONIOENCODING=utf-8 python scripts/_finalize_with_rerun.py
+```
 
-# 4a) cinema LUT
-apply_cinematic_lut_by_shot_id(
-    'sample/story_arc_xiaohuang_daily/_working/shot_001_rerun.mp4',
-    'sample/story_arc_xiaohuang_daily/_working/shot_001_rerun_cinema.mp4',
-    'shot_001',
-)
-# shot_002 / shot_003 cinema 直接复用 archives/2026-10-12_v33_w2_first_run/*_cinema.mp4
+脚本自动做：
+1. 给 shot_001_rerun 应用 cinematic LUT（暖色·晨光）
+2. 3 镜 -c copy lossless 拼接 → 16:9 版
+3. 转 9:16 (1080x1920) → 小红书主推版
+4. 抽 0.5s 帧作为封面
+5. 归档 _working/ 到 archives/<日期>_v34_w3_finalize/
 
-# 4b) 拼接顺序
-files = [
-    'sample/story_arc_xiaohuang_daily/_working/shot_001_rerun_cinema.mp4',  # 新：窗边幼犬
-    'sample/story_arc_xiaohuang_daily/archives/2026-10-12_v33_w2_first_run/shot_002_cinema.mp4',
-    'sample/story_arc_xiaohuang_daily/archives/2026-10-12_v33_w2_first_run/shot_003_cinema.mp4',
-]
-concat_files(files, 'sample/story_arc_xiaohuang_daily/_working/xiaohuang_16x9_full3.mp4')
+可选参数：
+- `--shot-001 PATH`：自定义 shot_001 rerun 路径
+- `--cover-time 0.5`：封面帧 t 秒偏移
+- `--no-archive`：跳过自动归档
 
-# 4c) 转 9:16
-to_vertical(
-    'sample/story_arc_xiaohuang_daily/_working/xiaohuang_16x9_full3.mp4',
-    'sample/story_arc_xiaohuang_daily/final/xiaohuang_9x16_xiaohongshu.mp4',
-)
-
-# 4d) 抽封面帧
-ffmpeg -y -ss 0.5 -i final/xiaohuang_9x16_xiaohongshu.mp4 -frames:v 1 final/cover_9x16.png
+预期输出：
+```
+final/xiaohuang_16x9.mp4               17.5s / 1920x1080
+final/xiaohuang_9x16_xiaohongshu.mp4   17.5s / 1080x1920  ⭐
+final/cover_9x16.png                   封面
+archives/<today>_v34_w3_finalize/      归档
 ```
 
 ### Step 5: 归档今天 rerun（保留历史）
