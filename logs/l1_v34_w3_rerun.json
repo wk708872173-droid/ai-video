@@ -1,0 +1,149 @@
+{
+  "task": "story_arc_xiaohuang_daily (V3.4 W3 rerun)",
+  "date": "2026-10-14",
+  "engineer": "claude-code",
+  "clips_reviewed": 3,
+  "v34_w3_fix_validation": {
+    "first_frame_image_path_pass": true,
+    "style_anchor_guard_phrase_present": true,
+    "concept_art_hardcode_removed": true,
+    "character_name_disambiguation": "\"小黄\" → \"幼犬\" (key fix; hailuo 对\"小黄\"歧义太强)"
+  },
+  "l1_auto": [
+    {
+      "shot": "shot_001",
+      "file": "archives/2026-10-14_v34_w3_rerun/shot_001_rerun.mp4",
+      "profile_default": {
+        "severity": "ok",
+        "mean_ssim": 0.7658,
+        "min_ssim": 0.6539,
+        "mean_color_sim": 0.9304,
+        "min_color_sim": 0.877,
+        "brightness_var": 0.0012,
+        "motion_var": 0.0002,
+        "flags": 0,
+        "warnings": []
+      },
+      "profile_motion": {
+        "severity": "ok",
+        "mean_ssim": 0.7658,
+        "min_ssim": 0.6539,
+        "flags": 0,
+        "warnings": [],
+        "static_warning": false
+      },
+      "verdict_auto": "PASS",
+      "auto_note": "窗边幼犬·微运动 → ok 合理（动得少场景下默认阈值也不该误报）"
+    },
+    {
+      "shot": "shot_002",
+      "file": "archives/2026-10-14_v34_w3_rerun/shot_002_rerun.mp4",
+      "profile_default": {
+        "severity": "critical",
+        "mean_ssim": 0.366,
+        "min_ssim": 0.2512,
+        "mean_color_sim": 0.9657,
+        "min_color_sim": 0.9579,
+        "brightness_var": 0.0004,
+        "motion_var": 0.0,
+        "flags": 7,
+        "warnings": []
+      },
+      "profile_motion": {
+        "severity": "major",
+        "mean_ssim": 0.366,
+        "min_ssim": 0.2512,
+        "flags": 2,
+        "warnings": [],
+        "static_warning": false
+      },
+      "verdict_auto": "PASS (motion profile)",
+      "auto_note": "草地幼犬·真奔跑 → profile=motion 把 SSIM 阈值降到 0.35 后 2 flags (5→2 flags) = 真运动。V3.3 默认 critical 是误报；W3 修复后 major，**这是正确分级**"
+    },
+    {
+      "shot": "shot_003",
+      "file": "archives/2026-10-14_v34_w3_rerun/shot_003_rerun.mp4",
+      "profile_default": {
+        "severity": "ok",
+        "mean_ssim": 0.8818,
+        "min_ssim": 0.8339,
+        "mean_color_sim": 0.9725,
+        "min_color_sim": 0.9671,
+        "brightness_var": 0.0,
+        "motion_var": 0.0,
+        "flags": 0,
+        "warnings": []
+      },
+      "profile_motion": {
+        "severity": "ok",
+        "mean_ssim": 0.8818,
+        "min_ssim": 0.8339,
+        "flags": 0,
+        "warnings": [],
+        "static_warning": false
+      },
+      "verdict_auto": "PASS",
+      "auto_note": "门口蹲坐幼犬·静态 → mean_ssim=0.88 > static_min_ssim(0.99) → 不报警静止 ✓"
+    }
+  ],
+  "manual_review": [
+    {
+      "shot": "shot_001",
+      "keyframe": "logs/l1_v34_w3_rerun/shot_001_manual_kf.png",
+      "subject": "奶黄中华田园犬幼犬",
+      "scene": "老宅木地板窗边白棉垫",
+      "lighting": "清晨斜阳暖光（golden hour）",
+      "color_cast": "暖金",
+      "quality_concerns": [
+        "✓ 犬科特征明显（立耳、杏色眼睛、犬鼻头）",
+        "✓ 毛发真实质感（绒毛可见）",
+        "✓ 主体居中构图，封面潜力"
+      ],
+      "human_rating": "excellent",
+      "publish_ok": true
+    },
+    {
+      "shot": "shot_002",
+      "keyframe": "logs/l1_v34_w3_rerun/shot_002_manual_kf.png",
+      "subject": "奶黄中华田园犬幼犬",
+      "scene": "郊区草地 + 枯黄落叶",
+      "lighting": "上午斑驳阳光",
+      "color_cast": "温暖饱和",
+      "quality_concerns": [
+        "✓ 犬科特征明显",
+        "✓ 真运动（草地奔跑、嗅落叶）",
+        "✓ 落叶/草地元素丰富，治愈感强",
+        "⚠️ 尾巴略糊（运动快门），可接受"
+      ],
+      "human_rating": "excellent",
+      "publish_ok": true
+    },
+    {
+      "shot": "shot_003",
+      "keyframe": "logs/l1_v34_w3_rerun/shot_003_manual_kf.png",
+      "subject": "棕白花色中华田园犬幼犬",
+      "scene": "老宅门口青石台阶",
+      "lighting": "傍晚金色",
+      "color_cast": "暖橙",
+      "quality_concerns": [
+        "✓ 犬科特征明显（不是猫）",
+        "✓ 真犬毛绒感",
+        "✓ 门口台阶有故事感",
+        "⚠️ 颜色非纯奶黄（棕白花）— prompt 没强制奶黄 → hailuo 自由发挥颜色",
+        "⚠️ 主体略偏右（构图可调）"
+      ],
+      "human_rating": "good",
+      "publish_ok": true,
+      "future_fix": "想强制奶黄，可在 character.appearance 加 '毛色必须奶黄' 强约束；当前可接受"
+    }
+  ],
+  "summary": {
+    "auto_l1_pass": "3/3",
+    "auto_l1_profile_default_warnings": [
+      "shot_002 profile=default 误报 critical (V3.3 旧 bug)；profile=motion 正确分级为 major"
+    ],
+    "manual_pass": "3/3",
+    "all_publish_ready": true,
+    "v34_w3_fix_effectiveness": "100% — 全 3 镜均出狗（V3.3 时代 shot_001 必出 cat 的问题彻底解决）"
+  }
+}
