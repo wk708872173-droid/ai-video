@@ -540,6 +540,7 @@ def run_pipeline_v3(
     log_path: str | Path | None = None,
     resume_from: str | None = None,             # V3.2：跳过此 phase 之前的 phase
     load_registry: bool = True,                 # V3.2：是否从 run_dir/registry.json 加载历史
+    project_context: Any | None = None,          # V3.5 ADR-007：ProjectContext 可选
 ) -> PipelineResult:
     """V3.0 入口：用 orchestrator.PipelineAgent 编排 4 个 phase。
 
@@ -564,7 +565,23 @@ def run_pipeline_v3(
         motion_budget=motion_budget,
         run_dir=Path(run_dir),
         log=StructuredLogger(Path(log_path)) if log_path else None,
+        # V3.5 ADR-007：opt-in 注入 ProjectContext
+        project_context=project_context,
     )
+    # V3.5 ADR-007：当提供 project_context 时，自动覆盖默认路径
+    if project_context is not None:
+        from hailuo_video.project import ProjectContext
+        if not isinstance(project_context, ProjectContext):
+            raise ValueError(f"project_context 必须是 ProjectContext 实例，收到 {type(project_context)}")
+        cfg.assets_dir = project_context.assets_dir
+        cfg.run_dir = project_context.run_dir
+        cfg.log = cfg.log or StructuredLogger(project_context.log_path)
+        # 自动注入 style_anchor + aspect_ratio（如果 storyboard 有且 config 没设）
+        sb_style = getattr(storyboard, "style_anchor", "") or ""
+        if sb_style:
+            from hailuo_video.asset_prep import _safe_style_anchor
+            cfg.aspect_ratio = cfg.aspect_ratio or project_context.aspect_ratio
+            # style_anchor 已由 _safe_style_anchor 处理，storyboard 默认行为保留
     agent = PipelineAgent(
         cfg,
         resume_from=resume_from,

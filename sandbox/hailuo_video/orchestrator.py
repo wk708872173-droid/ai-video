@@ -92,7 +92,12 @@ class PipelineResult:
 
 @dataclass
 class PipelineConfig:
-    """PipelineAgent.run() 的所有可配项。"""
+    """PipelineAgent.run() 的所有可配项。
+
+    V3.5 ADR-007：可选 project_context 注入，自动 save all
+    路径、env、style_anchor 来自 ProjectContext。无 project_context 时
+    仍用下面 defaults（向后兼容 V3.4 调用方）。
+    """
     image_backend: Any = None               # image_engine.IImageBackend
     video_backend: Any = None               # video_engine.KenBurnsBackend
     tts_backend: Any = None                  # tts_engine.TTSBackend
@@ -109,6 +114,8 @@ class PipelineConfig:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     log: StructuredLogger | None = None
     run_dir: Path = Path("./run")
+    # V3.5 ADR-007：项目级上下文（optional，None = 旧默认行为）
+    project_context: Any = None               # ProjectContext 实例
 
 
 # ---------- Phase 描述 ----------
