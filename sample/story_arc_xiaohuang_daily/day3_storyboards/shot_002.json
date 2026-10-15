@@ -1,0 +1,99 @@
+{
+  "title": "中华田园犬·奶黄幼犬·治愈一日 (Day 3 · 朋友来玩) [明天执行] · shot_002",
+  "characters": [
+    {
+      "name": "幼犬",
+      "appearance": "中华田园犬幼犬约 6 个月大，毛色温暖奶黄带浅米色渐变至腹部，短毛光滑略带绒，立耳微前倾，杏色眼睛清澈带瞳孔反光，黑色湿润鼻头，尾巴中等长度微卷向上翘，整体体态轻盈健康约 5 公斤，四肢修长但不纤细，胸前白斑呈小条状",
+      "personality": [
+        "治愈",
+        "好奇",
+        "温顺",
+        "社交"
+      ],
+      "color_palette": [
+        "奶黄",
+        "浅米",
+        "杏色",
+        "白"
+      ]
+    },
+    {
+      "name": "小黑",
+      "appearance": "中华田园犬幼犬约 6 个月大，与奶黄幼犬同龄，毛色纯黑略带深棕光泽，黑色短毛光滑有光泽，立耳略大微前倾，杏色眼睛明亮带瞳孔反光，黑色鼻头圆润湿润，尾巴中等长度微卷上翘，整体体态稍胖约 6 公斤，胸前一撮白色月牙形毛发，左前爪带一小白袜",
+      "personality": [
+        "活泼",
+        "调皮",
+        "热情"
+      ],
+      "color_palette": [
+        "纯黑",
+        "深棕",
+        "杏色",
+        "月牙白"
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": 7,
+      "location": "老宅院门外石板小径（邻居家方向）",
+      "atmosphere": "上午斜阳，温馨日常",
+      "key_elements": [
+        "青石板小径",
+        "矮竹篱笆",
+        "阳光透过树叶",
+        "邻居家方向"
+      ]
+    },
+    {
+      "id": 8,
+      "location": "郊区草地与落叶（同 Day 1 shot_002 草地）",
+      "atmosphere": "正午阳光斑驳，充满活力",
+      "key_elements": [
+        "绿色草地",
+        "枯黄落叶",
+        "低矮灌木",
+        "追逐动线"
+      ]
+    },
+    {
+      "id": 9,
+      "location": "老宅门口青石台阶（同 Day 1/2 黄昏台阶）",
+      "atmosphere": "黄昏金色时刻，两只小狗一起看夕阳",
+      "key_elements": [
+        "青石板台阶",
+        "夕阳天空橙红",
+        "远山剪影",
+        "两只狗狗并排"
+      ]
+    }
+  ],
+  "shots": [
+    {
+      "index": 2,
+      "scene_id": 8,
+      "shot_type": "中景",
+      "description": "正午阳光斑驳的郊区草地上，6 个月大的奶黄色中华田园犬幼犬和 6 个月大的纯黑色中华田园犬幼犬一起追逐玩耍——奶黄幼犬绕着灌木丛跑，黑色幼犬从另一侧扑出追逐，奶黄幼犬急停转身，黑色幼犬在草地上打了个滚儿翻肚皮四脚朝天，奶黄幼犬好奇地凑近嗅闻，黑色幼犬翻身跃起继续追逐。两只小狗在阳光下互动活泼，绒毛可见，杏色眼睛都充满童趣。镜头低角度跟拍两只幼犬奔跑方向。",
+      "shot_id": "shot_002",
+      "characters": [
+        "幼犬",
+        "小黑"
+      ],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "活力",
+        "快乐",
+        "纯真"
+      ],
+      "camera_motion": "跟拍-主体运动",
+      "time": "",
+      "subject_action": "两只幼犬在草地上追逐打滚玩耍",
+      "expected_duration": 6.0,
+      "motion_complexity": "complex",
+      "continuity_from_prev": "承接 shot_001 相遇 → 草地玩耍·高潮镜"
+    }
+  ],
+  "style_anchor": "photorealistic cinematic pet documentary, shot on ARRI Alexa Mini LF + Cooke S7/i Full Frame Plus lenses, 24fps, soft natural lighting with atmospheric haze, photorealistic Chinese rural dog fur with individual hair detail visible including绒毛真实渐变, NO illustration style, NO CGI aesthetic, NO anime, NO cartoon, NO watercolor, NO stylized characters, NO unrealistic large anime eyes, naturalistic warm color grading reminiscent of Japanese rural cinema (是枝裕和风格), shallow depth of field with creamy bokeh on background, subtle film grain, golden hour lighting for sunset scenes, real-life rural China aesthetic, photojournalistic authenticity",
+  "char_sheet_anchor": ""
+}
