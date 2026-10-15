@@ -1,0 +1,82 @@
+{
+  "title": "中华田园犬·奶黄幼犬·治愈一日 (Day 2 · 24h 闭环) [2026-10-15] · shot_003",
+  "characters": [
+    {
+      "name": "幼犬",
+      "appearance": "中华田园犬幼犬约 6 个月大，毛色温暖奶黄带浅米色渐变至腹部，短毛光滑略带绒，立耳微前倾，杏色眼睛清澈带瞳孔反光，黑色湿润鼻头，尾巴中等长度微卷向上翘，整体体态轻盈健康约 5 公斤，四肢修长但不纤细，胸前白斑呈小条状",
+      "personality": [
+        "治愈",
+        "好奇",
+        "温顺"
+      ],
+      "color_palette": [
+        "奶黄",
+        "浅米",
+        "杏色",
+        "白"
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": 4,
+      "location": "老宅门口青石台阶（与 Day 1 shot_003 同场景）",
+      "atmosphere": "夕阳西沉，金色余晖洒在台阶与远山",
+      "key_elements": [
+        "青石板台阶",
+        "夕阳天空橙红",
+        "远山剪影",
+        "微风吹动落叶"
+      ]
+    },
+    {
+      "id": 5,
+      "location": "老宅窗台（与 Day 1 shot_001 同窗台，夜间转光）",
+      "atmosphere": "深夜月光，柔蓝调，虫鸣微响",
+      "key_elements": [
+        "白棉布坐垫",
+        "木格窗框",
+        "月光斜照",
+        "窗外星点"
+      ]
+    },
+    {
+      "id": 6,
+      "location": "老宅窗台（同 shot_005，黎明转光）",
+      "atmosphere": "清晨第一缕阳光，温暖金色",
+      "key_elements": [
+        "白棉布坐垫",
+        "木格窗框",
+        "金色朝阳光线",
+        "窗帘微卷"
+      ]
+    }
+  ],
+  "shots": [
+    {
+      "index": 3,
+      "scene_id": 6,
+      "shot_type": "中景",
+      "description": "清晨第一缕阳光透过木格窗洒入，6 个月大的中华田园犬幼犬（毛色温暖奶黄，立耳竖起）从棉垫上缓缓睁眼醒来，伸了一个大懒腰——前爪向前伸展，背部弓起，然后转头望向窗外阳光方向。杏色眼睛被朝阳染成金色。镜头从棉垫侧面缓慢上摇至幼犬脸部特写。",
+      "shot_id": "shot_003",
+      "characters": [
+        "幼犬"
+      ],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "希望",
+        "清新",
+        "温暖"
+      ],
+      "camera_motion": "俯仰-下到上",
+      "time": "",
+      "subject_action": "幼犬在晨光中醒来伸懒腰望窗",
+      "expected_duration": 6.0,
+      "motion_complexity": "simple",
+      "continuity_from_prev": "DAY 2 CLOSING — 24h 完整闭环：黄昏→夜→黎明。与 Day 1 shot_001 窗边伸懒腰首尾一致，形成 Day 1/Day 2 完美对称。"
+    }
+  ],
+  "style_anchor": "photorealistic cinematic pet documentary, shot on ARRI Alexa Mini LF + Cooke S7/i Full Frame Plus lenses, 24fps, soft natural lighting with atmospheric haze, photorealistic Chinese rural dog fur with individual hair detail visible including绒毛真实渐变, NO illustration style, NO CGI aesthetic, NO anime, NO cartoon, NO watercolor, NO stylized characters, NO unrealistic large anime eyes, naturalistic warm color grading reminiscent of Japanese rural cinema (是枝裕和风格), shallow depth of field with creamy bokeh on background, subtle film grain, golden hour lighting for sunset/dawn scenes, real-life rural China aesthetic, photojournalistic authenticity",
+  "char_sheet_anchor": ""
+}
