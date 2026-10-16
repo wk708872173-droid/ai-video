@@ -24,6 +24,14 @@ from hailuo_video.prompts import (
     NOVEL_TO_SCRIPT_PROMPT,
     STORYBOARD_PROMPT,
 )
+# V3.5 Director 升级：白名单复用（prompts_director 是 leaf 模块，无循环 import 风险）
+from hailuo_video.prompts_director import (
+    DEPTH_OF_FIELD_WHITELIST,
+    LENS_WHITELIST,
+    NARRATIVE_BEAT_WHITELIST,
+    PACING_WHITELIST,
+    TRANSITION_WHITELIST,
+)
 
 
 SANDBOX_SCRIPT_DIR = PACKAGE_ROOT / "scripts_out"
@@ -124,6 +132,8 @@ class Scene:
     characters: list[str] = field(default_factory=list)
     summary: str = ""
     dialogue: str = ""
+    # V3.5 Director 升级：per-scene 起承转合（来自 LLM 的 scene 级别 narrative_beat）
+    narrative_beat: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -154,6 +164,10 @@ class Script:
                     characters=list(s.get("characters", []) or []),
                     summary=str(s.get("summary", "")),
                     dialogue=str(s.get("dialogue", "")),
+                    # V3.5：narrative_beat 安全取（白名单外 → 空串）
+                    narrative_beat=_whitelist_or_empty(
+                        s.get("narrative_beat", ""), NARRATIVE_BEAT_WHITELIST
+                    ),
                 ))
             except (TypeError, ValueError) as exc:
                 raise LLMError(f"scene 解析失败：{exc}") from exc
@@ -211,6 +225,22 @@ class Shot:
                                                 #   complex  → 跳过（需 GPU + 真 AI 视频模型）
     # V3.2 自动开发冲刺（轮 8）：continuity_from_prev — 故事弧线里与前一镜的衔接（自由文本描述）
     continuity_from_prev: str = ""
+
+    # ---------- V3.5 Director 升级：12 个 director 字段（追加；不重排） ----------
+    # 默认空值/0 → 现有 Shot(index=1, scene_id=1, shot_type="...", description="...") 构造仍合法
+    # 解析端用 .get() 安全取；白名单外值 → 空串（不抛错，向后兼容 day1-3 JSON）
+    hook: str = ""                          # 前 3 秒钩子（通常仅 shot_001）
+    pacing: str = ""                        # 快 / 中 / 慢（白名单 PACING_WHITELIST）
+    lens: str = ""                          # wide / 35mm / 50mm / 85mm / telephoto
+    depth_of_field: str = ""                # shallow / deep
+    lighting: str = ""                      # 自由文本：主光方向 + 反差 + 特殊光线
+    screen_direction: str = ""              # L→R / R→L / 无
+    color_grade: str = ""                   # teal-and-orange / 暖调 / 冷调 / 自然中性
+    transition_in: str = ""                 # cut / dissolve / match_cut / fade
+    transition_out: str = ""                # cut / dissolve / match_cut / fade
+    bgm_cue: str = ""                       # 自由文本：背景音乐 / 音效提示
+    narrative_beat: str = ""                # 起 / 承 / 转 / 合（per-shot 标签）
+    emotion_arc_point: float = 0.0          # 0..1 紧张度曲线（0=平, 1=高潮）
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -352,11 +382,27 @@ class StoryArc:
         }
 
 
+# ---------- V3.5 Director 升级：白名单 helper ----------
+
+def _whitelist_or_empty(value: Any, whitelist: tuple[str, ...]) -> str:
+    """V3.5 lenient 校验：值不在白名单 → 返回空串（不抛错，向后兼容 day1-3 JSON）。
+
+    与 prompts_director._whitelist_or_empty 行为一致；此处重复定义以避免
+    script_engine → prompts_director 内部循环依赖（如未来 prompts_director
+    需要引用 LLMError 的话）。
+    """
+    if isinstance(value, str) and value in whitelist:
+        return value
+    return ""
+
+
 def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
     """V3.2 自动开发冲刺（轮 8）：从 dict 直接构造 Shot（不走 LLM 输出解析）。
 
     与 _parse_shots_payload 不同：这里是 JSON 已解析好的 list[dict]，不再走
     JSON 抽取 / fenced code block 解析。校验比 LLM 输出更宽松。
+
+    V3.5 Director 升级：12 个 director 字段用 .get() 安全取；白名单外值 → 空串。
     """
     motion_complexity_raw = str(s.get("motion_complexity", "static") or "static")
     if motion_complexity_raw not in ("static", "simple", "complex"):
@@ -367,6 +413,11 @@ def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
         duration = float(duration_raw) if duration_raw not in (None, "") else 5.0
     except (TypeError, ValueError):
         duration = 5.0
+    # V3.5：emotion_arc_point 是 float，单独容错
+    try:
+        emotion_arc = float(s.get("emotion_arc_point", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        emotion_arc = 0.0
     return Shot(
         index=int(s.get("index", idx + 1)),
         scene_id=int(s.get("scene_id", 0)),
@@ -382,6 +433,27 @@ def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
         expected_duration=duration,
         motion_complexity=motion_complexity_raw,
         continuity_from_prev=str(s.get("continuity_from_prev", "") or ""),
+        # V3.5 Director 字段（白名单外 → 空串；自由文本直接 str()）
+        hook=str(s.get("hook", "") or ""),
+        pacing=_whitelist_or_empty(s.get("pacing", ""), PACING_WHITELIST),
+        lens=_whitelist_or_empty(s.get("lens", ""), LENS_WHITELIST),
+        depth_of_field=_whitelist_or_empty(
+            s.get("depth_of_field", ""), DEPTH_OF_FIELD_WHITELIST
+        ),
+        lighting=str(s.get("lighting", "") or ""),
+        screen_direction=str(s.get("screen_direction", "") or ""),
+        color_grade=str(s.get("color_grade", "") or ""),
+        transition_in=_whitelist_or_empty(
+            s.get("transition_in", ""), TRANSITION_WHITELIST
+        ),
+        transition_out=_whitelist_or_empty(
+            s.get("transition_out", ""), TRANSITION_WHITELIST
+        ),
+        bgm_cue=str(s.get("bgm_cue", "") or ""),
+        narrative_beat=_whitelist_or_empty(
+            s.get("narrative_beat", ""), NARRATIVE_BEAT_WHITELIST
+        ),
+        emotion_arc_point=emotion_arc,
     )
 
 
@@ -485,6 +557,11 @@ def _parse_shots_payload(text: str, n_shots: int) -> list[Shot]:
             raise LLMError(f"shot {i+1} duration 不合法：{duration_raw!r}") from exc
         if duration <= 0 or duration > 30:
             raise LLMError(f"shot {i+1} duration 越界：{duration}（需 0 < d ≤ 30）")
+        # V3.5：emotion_arc_point 是 float，单独容错
+        try:
+            emotion_arc = float(s.get("emotion_arc_point", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            emotion_arc = 0.0
 
         out.append(Shot(
             index=int(s.get("index", i + 1)),
@@ -501,6 +578,27 @@ def _parse_shots_payload(text: str, n_shots: int) -> list[Shot]:
             motion_complexity=motion_complexity_raw,
             # V3.2 自动开发冲刺（轮 8）：故事弧线字段
             continuity_from_prev=str(s.get("continuity_from_prev", "") or ""),
+            # V3.5 Director 字段（白名单外 → 空串；自由文本直接 str()）
+            hook=str(s.get("hook", "") or ""),
+            pacing=_whitelist_or_empty(s.get("pacing", ""), PACING_WHITELIST),
+            lens=_whitelist_or_empty(s.get("lens", ""), LENS_WHITELIST),
+            depth_of_field=_whitelist_or_empty(
+                s.get("depth_of_field", ""), DEPTH_OF_FIELD_WHITELIST
+            ),
+            lighting=str(s.get("lighting", "") or ""),
+            screen_direction=str(s.get("screen_direction", "") or ""),
+            color_grade=str(s.get("color_grade", "") or ""),
+            transition_in=_whitelist_or_empty(
+                s.get("transition_in", ""), TRANSITION_WHITELIST
+            ),
+            transition_out=_whitelist_or_empty(
+                s.get("transition_out", ""), TRANSITION_WHITELIST
+            ),
+            bgm_cue=str(s.get("bgm_cue", "") or ""),
+            narrative_beat=_whitelist_or_empty(
+                s.get("narrative_beat", ""), NARRATIVE_BEAT_WHITELIST
+            ),
+            emotion_arc_point=emotion_arc,
         ))
     if len(out) != n_shots:
         raise LLMError(
@@ -584,6 +682,23 @@ class MiniMaxChatBackend(LLMBackend):
             "Authorization": f"Bearer {self._api_key}",
         }
 
+        # V3.5 P3：audit hook（CLAUDE.md §5：Request → LLM Payload → Response）
+        # 仅在显式提供 project_id 时打 audit；默认不 audit 保持向后兼容
+        # （现有 40 个 test_script_engine.py + 27 test_v35_audit.py 不依赖这个路径）
+        project_id = str(opts.get("project_id", "") or "")
+        endpoint = str(opts.get("endpoint", "minimax_chat") or "minimax_chat")
+        log_dir = opts.get("log_dir")
+        import time as _time
+        t0 = _time.monotonic() if project_id else 0.0
+        if project_id:
+            from hailuo_video.audit_llm import audit_request, audit_response
+            # payload 统一为 {system, user}（不含 model，避免 request/response hash 不一致）
+            audit_request(
+                project_id, endpoint,
+                {"system": system, "user": user},
+                log_dir=log_dir,
+            )
+
         try:
             if self._http_post is not None:
                 data = self._http_post(url, body, headers)
@@ -596,20 +711,90 @@ class MiniMaxChatBackend(LLMBackend):
                     detail = exc.read().decode("utf-8", errors="replace")[:300]
             except Exception:
                 pass
+            if project_id:
+                audit_response(
+                    project_id, endpoint,
+                    {"system": system, "user": user},
+                    {"error": detail},
+                    duration_seconds=_time.monotonic() - t0,
+                    ok=False, error_code=f"HTTP_{exc.code}",
+                    log_dir=log_dir,
+                )
             raise LLMError(f"MiniMax HTTP {exc.code}：{detail}") from exc
         except urllib.error.URLError as exc:
+            if project_id:
+                audit_response(
+                    project_id, endpoint,
+                    {"system": system, "user": user},
+                    {"error": str(exc.reason)},
+                    duration_seconds=_time.monotonic() - t0,
+                    ok=False, error_code="URL_ERROR",
+                    log_dir=log_dir,
+                )
             raise LLMError(f"MiniMax URLError：{exc.reason}") from exc
         except (OSError, TimeoutError) as exc:
+            if project_id:
+                audit_response(
+                    project_id, endpoint,
+                    {"system": system, "user": user},
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                    duration_seconds=_time.monotonic() - t0,
+                    ok=False, error_code=type(exc).__name__,
+                    log_dir=log_dir,
+                )
             raise LLMError(f"MiniMax 网络错：{type(exc).__name__}: {exc}") from exc
 
         if not isinstance(data, dict):
+            if project_id:
+                audit_response(
+                    project_id, endpoint,
+                    {"system": system, "user": user},
+                    {"error": f"non-dict response: {type(data).__name__}"},
+                    duration_seconds=_time.monotonic() - t0,
+                    ok=False, error_code="STRUCTURE_ERROR",
+                    log_dir=log_dir,
+                )
             raise LLMError(f"MiniMax 返回非 dict：{data!r}")
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
+            if project_id:
+                audit_response(
+                    project_id, endpoint,
+                    {"system": system, "user": user},
+                    {"error": f"structure: {exc}"},
+                    duration_seconds=_time.monotonic() - t0,
+                    ok=False, error_code="STRUCTURE_ERROR",
+                    log_dir=log_dir,
+                )
             raise LLMError(f"MiniMax 响应结构不符：{data!r}") from exc
         if not isinstance(content, str):
+            if project_id:
+                audit_response(
+                    project_id, endpoint,
+                    {"system": system, "user": user},
+                    {"error": f"non-str content: {type(content).__name__}"},
+                    duration_seconds=_time.monotonic() - t0,
+                    ok=False, error_code="STRUCTURE_ERROR",
+                    log_dir=log_dir,
+                )
             raise LLMError(f"MiniMax 返回 content 非 str：{type(content)}")
+        # 成功：audit response（截断 content 避免大文件）
+        if project_id:
+            # content 可能很长，截断到前 200 字符作为 response_summary
+            summary = {
+                "task_id": data.get("id", ""),
+                "model": data.get("model", self._model),
+                "usage": data.get("usage", {}),
+                "content_preview": (content[:200] + "...") if len(content) > 200 else content,
+            }
+            audit_response(
+                project_id, endpoint,
+                {"system": system, "user": user},
+                summary,
+                duration_seconds=_time.monotonic() - t0,
+                ok=True, log_dir=log_dir,
+            )
         return content
 
     def _real_post(self, url: str, body: dict, headers: dict) -> dict:

@@ -225,11 +225,32 @@ def truncate(payload: Any, *, max_chars: int = 200) -> Any:
     return payload
 
 
+def audit_chat_call(
+    project_id: str,
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    log_dir: Path | None = None,
+) -> str:
+    """V3.5 P3：便利函数 — 调用 audit_request 并返回 payload_hash。
+
+    用法：在 `MiniMaxChatBackend.chat()` 顶部调一次 → 拿 hash → 调用
+    `audit_response(..., ok=True/False, error_code=...)` 时关联同一个 hash。
+
+    Returns:
+        payload_hash (sha256[:16])。空字符串表示未打 audit（project_id 为空）。
+    """
+    if not project_id:
+        return ""
+    return audit_request(project_id, endpoint, payload, log_dir=log_dir)
+
+
 __all__ = [
     "AuditEvent",
     "AuditLogger",
     "audit_request",
     "audit_response",
+    "audit_chat_call",
     "redact",
     "hash_short",
     "truncate",

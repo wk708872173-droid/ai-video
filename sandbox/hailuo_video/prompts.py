@@ -182,16 +182,81 @@ STORYBOARD_PROMPT = """你是一位漫剧分镜师，擅长"AI 生图 / 图生�
 """
 
 
+# ---------- V3.5 Director 升级：STORYBOARD_PROMPT_V2 ----------
+# V2 在 V1 字面字符串末尾追加 "导演视角" 段 + 扩展 schema（含 director 字段）。
+# 设计原则：
+#   - 仍使用 4 个 format 占位符（n_shots / three_beat_hint / camera_motion_whitelist /
+#     motion_complexity_whitelist / prompt_70_30 / script_json / characters_json），
+#     V2 不引入新占位符，所以 test_prompts.py 的 .format() 调用仍合法
+#   - 扩展 schema 写在字符串字面（不通过 format），保持向后兼容
+#   - V2 由 render_storyboard_prompt(director_mode=True) 显式启用
+
+STORYBOARD_DIRECTOR_GUIDANCE_V2 = """
+V3.5 Director 升级（director_mode=True 启用）—— 导演视角（每个镜头必须含）：
+
+- 构图（三分 / 居中 / 引导线 / 对称）
+- 镜头语言（景别 + 焦段感：wide / 35mm / 50mm / 85mm / telephoto）
+- 光线（主光方向 + 反差 + 特殊：剪影 / 逆光 / 侧光 / 顶光）
+- 视线方向（角色看向哪 + 视线匹配 eyeline match）
+- 屏幕方向（主体运动 L→R / R→L，保持 180°轴线规则）
+- 节奏（hold / 留白 / 推拉速度）
+- 转场意识（与前/后镜衔接：cut / dissolve / match_cut / fade）
+
+禁止纯抽象形容词（"很温馨" ❌）→ 改为可视化描述（"暖黄金色光边勾出绒毛轮廓" ✓）。
+"""
+
+STORYBOARD_DIRECTOR_SCHEMA_V2 = """
+V2 扩展字段（director_mode=True 时填写，旧字段全部保留）：
+- **narrative_beat**（可选）：起 / 承 / 转 / 合（per-shot 起承转合标签）
+- **pacing**（可选）：快 / 中 / 慢（影响剪辑节奏）
+- **lens**（可选）：wide / 35mm / 50mm / 85mm / telephoto
+- **depth_of_field**（可选）：shallow / deep
+- **lighting**（可选）：主光方向 + 反差描述
+- **screen_direction**（可选）：L→R / R→L / 无
+- **color_grade**（可选）：teal-and-orange / 暖调 / 冷调 / 暖金色（黄昏）/ 冷蓝调（夜）
+- **transition_in / transition_out**（可选）：cut / dissolve / match_cut / fade
+- **bgm_cue**（可选）：背景音乐 / 音效提示
+- **hook**（可选，shot_001 专属）：前 3 秒钩子文案
+"""
+
+
+def _build_storyboard_prompt_v2() -> str:
+    """从 STORYBOARD_PROMPT 拼接 V2（保留 V1 字符串字面，末尾追加 director guidance + 扩展 schema）。
+
+    V1 字符串保持不动（向后兼容）；V2 仅在 V1 字符串后追加段落。
+    """
+    # 注入点 1：在 "基础要求" 之前插入 director guidance
+    v1 = STORYBOARD_PROMPT
+    v2 = v1.replace(
+        "基础要求：",
+        STORYBOARD_DIRECTOR_GUIDANCE_V2.strip() + "\n\n基础要求：",
+        1,
+    )
+    # 注入点 2：在 "字段约束" 之后插入扩展字段说明
+    v2 = v2.replace(
+        "- **mood**（可选）：1-3 个情绪关键词\n",
+        "- **mood**（可选）：1-3 个情绪关键词\n" + STORYBOARD_DIRECTOR_SCHEMA_V2.strip() + "\n",
+        1,
+    )
+    return v2
+
+
+STORYBOARD_PROMPT_V2 = _build_storyboard_prompt_v2()
+
+
 def render_storyboard_prompt(
     *,
     n_shots: int = 30,
     script_json: str = "",
     characters_json: str = "",
     include_hints: bool = True,
+    director_mode: bool = False,
 ) -> str:
     """渲染 STORYBOARD_PROMPT 为最终字符串。
 
     include_hints=False 用于单测 / 简化版本（不含三拍 / 70/30 / 白名单提示）。
+    director_mode=False（默认）→ 渲染 V1，向后兼容现有 18 个 test_prompts.py 测试。
+    director_mode=True → 渲染 V2（注入 director guidance + 扩展 schema）。
     """
     if include_hints:
         three_beat_hint = THREE_BEAT_STRUCTURE_HINT.strip()
@@ -209,7 +274,8 @@ def render_storyboard_prompt(
         motion_complexity_whitelist = ""
         prompt_70_30 = ""
 
-    return STORYBOARD_PROMPT.format(
+    template = STORYBOARD_PROMPT_V2 if director_mode else STORYBOARD_PROMPT
+    return template.format(
         n_shots=n_shots,
         three_beat_hint=three_beat_hint,
         camera_motion_whitelist=camera_motion_whitelist,
