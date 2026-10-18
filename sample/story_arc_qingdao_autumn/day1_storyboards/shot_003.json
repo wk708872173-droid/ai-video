@@ -1,0 +1,30 @@
+{
+  "title": "青岛·十月中旬·秋日自然人文 (Day 1 · 纯秋日风光) · shot_003",
+  "characters": [],
+  "scenes": [],
+  "shots": [
+    {
+      "index": 1,
+      "scene_id": 3,
+      "shot_type": "远景",
+      "description": "黄昏五点半的青岛老城区天际线，从高处俯瞰中山路历史街区一带的红瓦屋顶海洋——数百栋德式与欧式历史建筑连绵起伏的赭红色陶瓦坡屋顶在夕阳下呈现温暖砖红光泽，屋顶老虎窗与烟囱清晰可见。远处可见青岛天主教堂的双塔尖顶剪影，更远处是崂山的青黛色山影与黄海海平线，夕阳正贴着崂山山脊缓缓落下，天空从橙红渐变到淡紫再过渡到深蓝。海面上泛着金红波光。整个画面像一幅油画，前景屋顶细节丰富，远景崂山与海平面辽阔。镜头从城市上方缓慢平推到崂山与夕阳方向。",
+      "shot_id": "shot_003",
+      "characters": [],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "壮阔",
+        "温暖",
+        "怀旧"
+      ],
+      "camera_motion": "缓慢平推",
+      "time": "",
+      "subject_action": "夕阳缓缓贴近崂山山脊",
+      "expected_duration": 6.0,
+      "motion_complexity": "simple",
+      "continuity_from_prev": "DAY 1 CLOSING — 老城天际线 + 崂山 + 黄昏·全片收束"
+    }
+  ],
+  "style_anchor": "photorealistic cinematic landscape documentary of Qingdao China mid-October autumn, shot on ARRI Alexa Mini LF + Cooke S7/i Full Frame Plus lenses, 24fps, soft natural golden hour lighting with atmospheric haze, photorealistic seagull feathers and autumn ginkgo maple leaves with individual vein detail visible, NO illustration style, NO CGI aesthetic, NO anime, NO cartoon, NO watercolor, NO stylized characters, naturalistic warm autumn color grading with deep amber orange and teal accents reminiscent of classic travel documentary, shallow depth of field with creamy bokeh on background, subtle film grain, golden hour lighting for sunset, real-life Qingdao coastal China aesthetic with European historical architecture red tile rooftops granite walls, photojournalistic authenticity, 9:16 vertical portrait composition optimized for xiaohongshu",
+  "char_sheet_anchor": ""
+}

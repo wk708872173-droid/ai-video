@@ -1,0 +1,30 @@
+{
+  "title": "青岛·十月中旬·秋日自然人文 (Day 1 · 纯秋日风光) · shot_001",
+  "characters": [],
+  "scenes": [],
+  "shots": [
+    {
+      "index": 1,
+      "scene_id": 1,
+      "shot_type": "远景",
+      "description": "清晨六点半的青岛栈桥，金色晨光从东方低角度照入，海面平静如镜泛着蜜金色光泽。栈桥这座 440 米长的古老石砌长堤从海岸线伸入黄海，堤尽头标志性的双层飞檐八角亭『回澜阁』在晨雾中若隐若现。堤两侧是粗粝花岗岩护栏和古典铸铁灯柱。数十只银白色海鸥在栈桥上空盘旋俯冲，翼展可见，羽毛被晨光勾出金色光边，背景是浅蓝偏粉的清晨天空和远处胶州湾的朦胧海岸线。整体氛围静谧辽阔，强调清晨的冷暖对比与海鸥的动感。镜头从栈桥一侧低角度缓慢推近回澜阁方向。",
+      "shot_id": "shot_001",
+      "characters": [],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "辽阔",
+        "宁静",
+        "晨光"
+      ],
+      "camera_motion": "缓慢推近",
+      "time": "",
+      "subject_action": "海鸥在栈桥上空盘旋俯冲",
+      "expected_duration": 6.0,
+      "motion_complexity": "simple",
+      "continuity_from_prev": "DAY 1 OPENING — 青岛地标开场，栈桥+海鸥+晨光"
+    }
+  ],
+  "style_anchor": "photorealistic cinematic landscape documentary of Qingdao China mid-October autumn, shot on ARRI Alexa Mini LF + Cooke S7/i Full Frame Plus lenses, 24fps, soft natural golden hour lighting with atmospheric haze, photorealistic seagull feathers and autumn ginkgo maple leaves with individual vein detail visible, NO illustration style, NO CGI aesthetic, NO anime, NO cartoon, NO watercolor, NO stylized characters, naturalistic warm autumn color grading with deep amber orange and teal accents reminiscent of classic travel documentary, shallow depth of field with creamy bokeh on background, subtle film grain, golden hour lighting for sunset, real-life Qingdao coastal China aesthetic with European historical architecture red tile rooftops granite walls, photojournalistic authenticity, 9:16 vertical portrait composition optimized for xiaohongshu",
+  "char_sheet_anchor": ""
+}

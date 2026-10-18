@@ -1,0 +1,30 @@
+{
+  "title": "青岛·十月中旬·秋日自然人文 (Day 1 · 纯秋日风光) · shot_002",
+  "characters": [],
+  "scenes": [],
+  "shots": [
+    {
+      "index": 1,
+      "scene_id": 2,
+      "shot_type": "中景",
+      "description": "上午十点的青岛八大关风景区，一条被金黄银杏叶和橙红枫叶完全覆盖的青石小径，地面像铺了一层厚厚的彩色地毯。小径两侧是八大关特有的欧式历史别墅——花岗岩墙体、红色陶瓦屋顶、拱形老虎窗，部分墙面爬满藤蔓。阳光从树冠间隙洒下形成斑驳光影，金色叶片缓缓飘落，背景可见一座造型典雅的二层小楼（公主楼风格）。风起时一片银杏叶从镜头前缓缓飘过，叶脉清晰可见。整体氛围温暖治愈，强调秋日自然色彩与历史人文建筑的对比。镜头从小径入口处缓慢推进，景深较浅，焦点在前景落叶上。",
+      "shot_id": "shot_002",
+      "characters": [],
+      "dialogue": "",
+      "voiceover": "",
+      "mood": [
+        "温暖",
+        "治愈",
+        "秋意"
+      ],
+      "camera_motion": "缓慢推近",
+      "time": "",
+      "subject_action": "银杏叶缓缓飘落",
+      "expected_duration": 6.0,
+      "motion_complexity": "simple",
+      "continuity_from_prev": "承接 shot_001 晨光 → 上午·自然秋色 + 历史建筑人文"
+    }
+  ],
+  "style_anchor": "photorealistic cinematic landscape documentary of Qingdao China mid-October autumn, shot on ARRI Alexa Mini LF + Cooke S7/i Full Frame Plus lenses, 24fps, soft natural golden hour lighting with atmospheric haze, photorealistic seagull feathers and autumn ginkgo maple leaves with individual vein detail visible, NO illustration style, NO CGI aesthetic, NO anime, NO cartoon, NO watercolor, NO stylized characters, naturalistic warm autumn color grading with deep amber orange and teal accents reminiscent of classic travel documentary, shallow depth of field with creamy bokeh on background, subtle film grain, golden hour lighting for sunset, real-life Qingdao coastal China aesthetic with European historical architecture red tile rooftops granite walls, photojournalistic authenticity, 9:16 vertical portrait composition optimized for xiaohongshu",
+  "char_sheet_anchor": ""
+}
