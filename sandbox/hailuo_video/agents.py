@@ -641,6 +641,34 @@ class EditingAgent(Agent):
                     metadata={"mode": mode, **result.to_dict()},
                 )
             elif mode == "full":
+                # V3.7 P0-3：SSIM 自检门禁（仅报警，不阻断 — 用户决策保守）
+                # 目的：把 daily_review_all_20261009.md 中 5 个 final 视频的 3-4 帧突跳
+                #       提前到 editing 阶段暴露（不动 quota，不阻断生产）。
+                # 依据：stage A SUMMARY 揭出"拼接层 + hailuo 单段"双层根因；
+                #       本 gate 覆盖拼接层（editing 前），单段层由 motion_gen phase 后续扩展。
+                # DeepSeek Q5 双锚定（last_frame_image）被 stage B 验证为不支持，本 gate 是替代路径。
+                from hailuo_video.quality import compute_frame_quality
+                import logging as _logging
+                _ssim_log = _logging.getLogger("hailuo_video.editing.ssim_gate")
+                _ssim_results: list[dict] = []
+                for _vp in task["video_paths"]:
+                    try:
+                        _rep = compute_frame_quality(_vp, profile="motion")
+                        _ssim_results.append({
+                            "video": str(_vp),
+                            "severity": _rep.severity,
+                            "mean_ssim": _rep.mean_ssim,
+                            "min_ssim": _rep.min_ssim,
+                        })
+                        if _rep.severity in ("critical", "major"):
+                            _ssim_log.warning(
+                                "ssim_gate_fail path=%s severity=%s min_ssim=%.3f mean_ssim=%.3f",
+                                _vp, _rep.severity, _rep.min_ssim, _rep.mean_ssim,
+                            )
+                    except FileNotFoundError:
+                        _ssim_log.warning("ssim_gate_skip path=%s reason=not_found", _vp)
+                    except Exception as _exc:
+                        _ssim_log.warning("ssim_gate_skip path=%s reason=%s: %s", _vp, type(_exc).__name__, _exc)
                 result = ed_mod.full_editing_pipeline(
                     video_paths=task["video_paths"],
                     output_path=task["output_path"],
@@ -657,7 +685,7 @@ class EditingAgent(Agent):
                         producer=self.name,
                         metadata=result.to_dict(),
                     )],
-                    metadata={"mode": mode, **result.to_dict()},
+                    metadata={"mode": mode, "ssim_gate": _ssim_results, **result.to_dict()},
                 )
             else:
                 return AgentResult(ok=False, error=f"EditingAgent unknown mode={mode!r}")
