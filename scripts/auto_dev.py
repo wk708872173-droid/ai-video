@@ -171,7 +171,7 @@ def step_coverage_gate(_args) -> tuple[bool, float]:
 
 # ---------- Step 5: auto commit (如有改动且一切通过) ----------
 
-def step_commit(_args) -> bool:
+def step_commit(_args, *, coverage_ok: bool | None = None) -> bool:
     header("Step 5: auto commit (如一切通过)")
     rc, out, _ = run(["git", "status", "--short"], timeout=30)
     if not out.strip():
@@ -184,9 +184,16 @@ def step_commit(_args) -> bool:
     if not out.strip():
         print("(无可 add 的 tracked 改动)")
         return True
-    # 生成 commit message（按时间戳）
+    # 生成 commit message（按时间戳）——如实反映门禁状态，不谎报
     from datetime import datetime
-    msg = f"auto-dev: 代码格式化 + 测试通过 ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n\n自动 commit by scripts/auto_dev.py"
+    stamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+    if coverage_ok is None:
+        msg = f"auto-dev: 代码格式化 + 测试通过 ({stamp})\n\n自动 commit by scripts/auto_dev.py"
+    elif coverage_ok:
+        msg = f"auto-dev: 代码格式化 + 测试通过 + 覆盖率达标 ({stamp})\n\n自动 commit by scripts/auto_dev.py"
+    else:
+        msg = (f"auto-dev: 代码格式化 + 测试通过（覆盖率未达标，--force-commit 放行）({stamp})\n\n"
+               f"自动 commit by scripts/auto_dev.py")
     rc, _, err = run(["git", "commit", "-m", msg], timeout=60)
     if rc != 0:
         print(f"❌ git commit 失败:\n{err[-500:]}")
@@ -204,6 +211,8 @@ def main() -> int:
     p.add_argument("--skip-secret-scan", action="store_true")
     p.add_argument("--skip-coverage", action="store_true", help="跳过 coverage gate")
     p.add_argument("--no-commit", action="store_true", help="不自动 commit")
+    p.add_argument("--force-commit", action="store_true",
+                   help="覆盖率未达标时仍强制 commit（默认 coverage 红则跳过 commit）")
     p.add_argument("--only-tests", action="store_true", help="只跑测试")
     p.add_argument("--coverage", action="store_true", help="测试时附加 coverage")
     args = p.parse_args()
@@ -232,12 +241,20 @@ def main() -> int:
         if not args.skip_coverage:
             cov_ok, pct = step_coverage_gate(args)
             results["coverage"] = cov_ok
-            # coverage 失败不 hard fail（CLAUDE.md §4 推荐 ≥80%，非阻断）
-            # 但记入 results 报告
+            # coverage 失败不 hard fail（CLAUDE.md §4 推荐 ≥80%，非阻断退出码）
+            # 但**阻断 auto commit** —— 否则会出现「覆盖率 78% 却提交『测试通过』」
+            # 的误导性 commit（V3.5 P5 修复）。--force-commit 可显式放行。
+        coverage_ok = results.get("coverage")
 
-        if not args.no_commit and all(v for k, v in results.items() if k in ("tests", "secret_scan", "lint")):
-            results["commit"] = step_commit(args)
+        commit_blockers = ("tests", "secret_scan", "lint")
+        blockers_ok = all(results.get(k) for k in commit_blockers)
+        coverage_blocks = not args.force_commit and coverage_ok is False
+
+        if not args.no_commit and blockers_ok and not coverage_blocks:
+            results["commit"] = step_commit(args, coverage_ok=coverage_ok)
         else:
+            if coverage_blocks:
+                print("\n⏭️  Step 5 跳过：覆盖率未达标（用 --force-commit 可放行）")
             results["commit"] = None  # skipped
 
     except Exception as exc:
