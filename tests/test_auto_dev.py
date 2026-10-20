@@ -28,12 +28,31 @@ import auto_dev  # noqa: E402
 
 
 class _FakeRun:
-    """记录所有 subprocess 调用，按命令前缀返回预设输出。"""
+    """记录所有 subprocess 调用，按命令前缀返回预设输出。
 
-    def __init__(self, *, coverage_pct: int = 90, git_dirty: bool = True):
+    dirty_scope 控制 git status 返回哪些脏文件：
+      - "managed" → 只有管辖路径（sandbox/tests/scripts/docs）有改动
+      - "outside" → 只有管辖路径**外**（sample/）有改动
+      - "both"    → 两者都有
+      - "clean"   → 全干净
+    """
+
+    def __init__(self, *, coverage_pct: int = 90, dirty_scope: str = "managed"):
         self.calls: list[list[str]] = []
         self.coverage_pct = coverage_pct
-        self.git_dirty = git_dirty
+        self.dirty_scope = dirty_scope
+
+    def _status_out(self, cmd: list[str]) -> str:
+        """模拟 `git status --short [-- paths...]` 的输出。"""
+        scoped = "--" in cmd
+        managed = self.dirty_scope in ("managed", "both")
+        outside = self.dirty_scope in ("outside", "both")
+        lines: list[str] = []
+        if managed and (not scoped or True):
+            lines.append(" M tests/foo.py")
+        if outside and not scoped:
+            lines.append(" M sample/story/README.md")
+        return ("\n".join(lines) + "\n") if lines else ""
 
     def __call__(self, cmd, *, cwd=None, timeout=600):
         self.calls.append(list(cmd))
@@ -48,12 +67,15 @@ class _FakeRun:
             return 0, out, ""
 
         if joined.startswith("git status"):
-            return 0, (" M tests/foo.py\n" if self.git_dirty else ""), ""
+            return 0, self._status_out(cmd), ""
 
         if joined.startswith("git add"):
             return 0, "", ""
 
         if joined.startswith("git commit"):
+            # 真 git：暂存区为空时 commit 报错 rc=1
+            if self.dirty_scope == "clean":
+                return 1, "", "nothing to commit, working tree clean"
             return 0, "", ""
 
         return 0, "", ""
@@ -200,7 +222,7 @@ def test_coverage_gate_fails_when_pytest_missing(monkeypatch):
 # ---------- step_commit 边界 ----------
 
 def test_step_commit_skips_when_clean(monkeypatch):
-    fake = _FakeRun(git_dirty=False)
+    fake = _FakeRun(dirty_scope="clean")
     monkeypatch.setattr(auto_dev, "run", fake)
     assert auto_dev.step_commit(None, coverage_ok=True) is True
     assert not [c for c in _git_calls(fake) if "commit" in c]
@@ -274,3 +296,54 @@ def test_skip_flags_still_run_remaining_gate(monkeypatch, flag):
     monkeypatch.setattr(auto_dev, "step_lint", lambda a: True)
     rc = _main(monkeypatch, [flag])
     assert rc == 0
+
+# ---------- 回归：管辖路径外的脏文件不应导致空 commit 失败 ----------
+
+def test_dirty_outside_managed_paths_does_not_break_commit(monkeypatch):
+    """只有 sample/ 有脏文件（add 路径外）→ 应正常跳过，不应报 FAIL。
+
+    事故场景：git status 全仓检查非空 → 但 git add 只 add sandbox/tests/
+    scripts/docs（sample/ 不在其中）→ 暂存区空 → git commit 报 rc=1
+    → step_commit 返回 False → 门禁误报 FAIL。
+    修法：status 检查与 add 路径对齐（-- pathspec）。
+    """
+    fake = _FakeRun(dirty_scope="outside")
+    monkeypatch.setattr(auto_dev, "run", fake)
+    assert auto_dev.step_commit(None, coverage_ok=90.0) is True
+    assert not [c for c in _git_calls(fake) if "commit" in c],         "管辖路径外干净时不应尝试 commit"
+
+
+def test_status_and_add_paths_are_aligned(monkeypatch):
+    """两次 git status 都必须带 pathspec，与 git add 的路径一致。"""
+    fake = _FakeRun(dirty_scope="both")
+    monkeypatch.setattr(auto_dev, "run", fake)
+    auto_dev.step_commit(None, coverage_ok=90.0)
+
+    statuses = [c for c in _git_calls(fake) if c[1] == "status"]
+    adds = [c for c in _git_calls(fake) if c[1] == "add"]
+    assert len(statuses) == 2, "应有两次 status 检查"
+    assert adds, "应有 git add"
+    for st in statuses:
+        assert "--" in st, f"status 必须限定 pathspec：{st}"
+        for p in auto_dev.AUTO_COMMIT_PATHS:
+            assert p in st, f"status pathspec 缺 {p}：{st}"
+    for ad in adds:
+        for p in auto_dev.AUTO_COMMIT_PATHS:
+            assert p in ad, f"add 缺 {p}：{ad}"
+
+
+def test_dirty_in_both_scopes_commits(monkeypatch):
+    """管辖路径内外都有脏文件 → 只提交管辖路径内的（sample/ 不受影响）。"""
+    fake = _FakeRun(dirty_scope="both")
+    monkeypatch.setattr(auto_dev, "run", fake)
+    assert auto_dev.step_commit(None, coverage_ok=90.0) is True
+    commits = [c for c in _git_calls(fake) if "commit" in c]
+    assert len(commits) == 1
+
+
+def test_clean_worktree_skips_cleanly(monkeypatch):
+    """全干净 → 跳过并返回 True（不报 FAIL）。"""
+    fake = _FakeRun(dirty_scope="clean")
+    monkeypatch.setattr(auto_dev, "run", fake)
+    assert auto_dev.step_commit(None, coverage_ok=90.0) is True
+    assert not [c for c in _git_calls(fake) if "commit" in c]

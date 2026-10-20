@@ -171,16 +171,21 @@ def step_coverage_gate(_args) -> tuple[bool, float]:
 
 # ---------- Step 5: auto commit (如有改动且一切通过) ----------
 
+# auto_dev 管辖的路径（门禁只看这些目录）。status 检查必须与 add 路径对齐，
+# 否则「add 路径外的脏文件」会让 status 一直非空 → 空 commit 报错（V3.5 P5 修复）。
+AUTO_COMMIT_PATHS = ["sandbox/", "tests/", "scripts/", "docs/"]
+
+
 def step_commit(_args, *, coverage_ok: bool | None = None) -> bool:
     header("Step 5: auto commit (如一切通过)")
-    rc, out, _ = run(["git", "status", "--short"], timeout=30)
+    rc, out, _ = run(["git", "status", "--short", "--", *AUTO_COMMIT_PATHS], timeout=30)
     if not out.strip():
-        print("(无未提交改动，跳过)")
+        print("(管辖路径下无 tracked 改动，跳过)")
         return True
     # 先 add（不带 -A，手动 add 已修改）
-    rc, _, _ = run(["git", "add", "-u", "sandbox/", "tests/", "scripts/", "docs/"], timeout=30)
-    # 重新查 status
-    rc, out, _ = run(["git", "status", "--short"], timeout=30)
+    rc, _, _ = run(["git", "add", "-u", *AUTO_COMMIT_PATHS], timeout=30)
+    # 重新查 status（同样限定路径）
+    rc, out, _ = run(["git", "status", "--short", "--", *AUTO_COMMIT_PATHS], timeout=30)
     if not out.strip():
         print("(无可 add 的 tracked 改动)")
         return True
