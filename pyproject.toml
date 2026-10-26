@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hailuo-video"
+# 单一事实源：读 sandbox/hailuo_video/__init__.py 的 __version__，不另设一份。
+# 注意该值当前为 "2.0.0"，与项目实际版本（V3.5/V3.7）不符 —— 属既有遗留，
+# 此处只做引用不做改动（无人消费该值，改它属独立事项）。
+dynamic = ["version"]
+description = "RMAP 短剧视频生成流水线：storyboard → 角色参考图 → 分镜图 → 运镜 → 配音 → 后期 → mp4"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+# 核心运行时依赖。清单来自全仓实际 import 统计（见 docs/drafts/cli_invocation_path_draft.md）：
+#   PIL(18) / imageio_ffmpeg(14) / edge_tts(2)
+# 注意 requests 仅出现在 mcp_client.py 的说明文字里，未被真正 import，故不列为依赖。
+dependencies = [
+    "pillow>=10.0",
+    "imageio-ffmpeg>=0.4.9",
+    "edge-tts>=6.1",
+]
+
+[project.optional-dependencies]
+# 本地视频推理（generate / batch 子命令）。doctor.py / local_client.py 均在
+# try 块内 import，缺失时走「环境未就绪」硬失败，不影响其余子命令。
+local-video = [
+    "torch>=2.0",
+    "diffusers>=0.25",
+    "numpy>=1.24",
+]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools]
+# 包实际位于 sandbox/ 下，非常规布局，需显式映射（README 记的
+# `python -m hailuo_video ...` 从仓库根跑不了即由此而来，见提案 D2）。
+package-dir = { "" = "sandbox" }
+
+[tool.setuptools.dynamic]
+# 必须显式声明读取位置；只写 dynamic=["version"] 会得到 0.0.0。
+version = { attr = "hailuo_video.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["sandbox"]
+include = ["hailuo_video*"]
+# runtime/ 只是数据目录（runs.jsonl），无 __init__.py，不是包 —— 不打包。
+exclude = ["hailuo_video.runtime*"]
+
+[tool.pytest.ini_options]
+# 本仓所有测试都用 `python -m pytest tests/ -q` 跑（README + scripts/auto_dev.py），
+# 此处仅固化 testpaths，避免裸 `pytest` 误收集根目录下的 sample/ 等目录。
+testpaths = ["tests"]

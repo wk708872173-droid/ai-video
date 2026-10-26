@@ -1,0 +1,99 @@
+{
+  "_comment": "V3.2 sample：每个 shot 含 subject_action / motion_complexity / camera_motion / expected_duration。运行后 motion_budget ≤ quota 时选 top-N shot 跑真 AI 视频。",
+  "title": "井底之蛙（V3.2 with motion instructions）",
+  "style_anchor": "古典中国水墨写意画风，宣纸米黄底色，大面积留白，淡墨晕染层次分明",
+  "characters": [
+    {
+      "name": "井蛙",
+      "appearance": "翠绿色青蛙，大而圆的眼睛鼓起，肚皮白净，四肢蹲坐，身形圆润活泼，神气傲慢",
+      "personality": ["自大", "无知"],
+      "color_palette": ["翠绿", "白", "墨黑"]
+    },
+    {
+      "name": "海龟",
+      "appearance": "深青色大海龟，背甲厚重古朴，龟纹清晰，颈长善动，眼神深邃沉稳",
+      "personality": ["从容"],
+      "color_palette": ["深青", "灰褐"]
+    }
+  ],
+  "scenes": [
+    {
+      "id": 1,
+      "location": "战国宋国一口浅井",
+      "atmosphere": "井底世界，井口是唯一的光源",
+      "key_elements": ["井口圆形天空", "井壁青苔", "井底浅水"]
+    }
+  ],
+  "shots": [
+    {
+      "index": 1,
+      "scene_id": 1,
+      "shot_type": "特写",
+      "camera_motion": "zoom_in",
+      "description": "井底视角仰望，圆形井口是天空唯一来源，翠绿青蛙蹲在浅水中仰头看井口，鼓眼得意",
+      "subject_action": "青蛙跳跃一下，然后静止",
+      "characters": ["井蛙"],
+      "dialogue": "",
+      "voiceover": "一口浅井里住着一只青蛙。",
+      "mood": ["悠然", "写意"],
+      "expected_duration": 6,
+      "motion_complexity": "static"
+    },
+    {
+      "index": 2,
+      "scene_id": 1,
+      "shot_type": "中景",
+      "camera_motion": "固定",
+      "description": "青蛙得意洋洋，鼓着白肚皮对井口挥爪，笑着自夸井底世界之大",
+      "subject_action": "青蛙挥手，然后停下挺胸",
+      "characters": ["井蛙"],
+      "dialogue": "我快乐极了！出来跳跳，进去歇歇，这就是我的快乐！",
+      "voiceover": "它对自己的生活非常满意。",
+      "mood": ["欢喜"],
+      "expected_duration": 6,
+      "motion_complexity": "simple"
+    },
+    {
+      "index": 3,
+      "scene_id": 1,
+      "shot_type": "中景",
+      "camera_motion": "pan_right",
+      "description": "井口边缘探出一只大海龟，深青色背甲古朴，探头向井底招呼",
+      "subject_action": "海龟缓慢探出头，然后停顿",
+      "characters": ["海龟", "井蛙"],
+      "dialogue": "你来看看我！",
+      "voiceover": "一天，一只海龟路过井边。",
+      "mood": ["急促"],
+      "expected_duration": 6,
+      "motion_complexity": "simple"
+    },
+    {
+      "index": 4,
+      "scene_id": 1,
+      "shot_type": "特写",
+      "camera_motion": "pan_left",
+      "description": "海龟伸左脚试入井口，左脚还没进，右脚已被井口绊住，进退两难",
+      "subject_action": "海龟左脚向下伸，然后卡住",
+      "characters": ["海龟"],
+      "dialogue": "",
+      "voiceover": "海龟想下井，但井口太小，进不去。",
+      "mood": ["意外"],
+      "expected_duration": 6,
+      "motion_complexity": "simple"
+    },
+    {
+      "index": 5,
+      "scene_id": 1,
+      "shot_type": "远景",
+      "camera_motion": "拉远",
+      "description": "夕阳西下，海龟向井蛙描述大海的辽阔无垠，井蛙呆立井底，仰头望天若有所思",
+      "subject_action": "海龟缓慢后退，井蛙静止抬头",
+      "characters": ["海龟", "井蛙"],
+      "dialogue": "",
+      "voiceover": "海龟讲了大海的辽阔。青蛙这才知道自己所见甚小。",
+      "mood": ["悲哀"],
+      "expected_duration": 6,
+      "motion_complexity": "complex"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "ai_video",
+			"path": "."
+		},
+		{
+			"name": "hr_dash_agent",
+			"path": "../../hr_dash_agent"
+		}
+	],
+	"settings": {}
+}

@@ -1,0 +1,41 @@
+{
+  "_comment": "RMAP 框架标准 storyboard 模板。复制此文件改 characters/scenes/shots 即可启动新项目。必填字段已用 _必填 标注。",
+  "title": "<your manga title>",
+  "style_anchor": "<古典水墨写意画风，宣纸米黄底色，留白构图，淡墨渲染>",
+  "characters": [
+    {
+      "_必填 appearance": "≥30 字具体外貌描述（i2i 锁脸）",
+      "name": "char1",
+      "appearance": "<宋国中年农夫，圆脸黑肤浓眉，头戴破旧竹编斗笠，身穿灰褐色粗麻短褐，腰系草绳，脚穿草鞋>",
+      "personality": ["<勤劳>", "<愚钝>"],
+      "color_palette": ["<灰褐>", "<土黄>"]
+    }
+  ],
+  "scenes": [
+    {
+      "_必填 id": "整数，shot.scene_id 引用",
+      "location": "<场景物理地点>",
+      "atmosphere": "<time of day + mood>",
+      "key_elements": ["<远山黛色>", "<老树桩>", "<田间小路>"]
+    }
+  ],
+  "shots": [
+    {
+      "_必填 scene_id": "引用 scenes[].id",
+      "_必填 shot_type": "远景/中景/近景/特写/过肩/俯拍/仰拍/拉远/推近",
+      "_选填 camera_motion": "pan_left/pan_right/pan_up/pan_down/固定/推近/拉远",
+      "_必填 mood[]": "平和/写意/欢喜/急促/慌张/悲哀/讽刺 等",
+      "_选填 time": "清晨/白天/午间/黄昏/夕阳/夜 等",
+      "characters": ["char1"],
+      "dialogue": "",
+      "voiceover": "<宋国有个农夫，每天在田里耕作。>",
+      "index": 1,
+      "scene_id": 1,
+      "shot_type": "<远景>",
+      "camera_motion": "<pan_left>",
+      "description": "<具体描述此镜头画面>",
+      "mood": ["平和", "写意"],
+      "time": "清晨"
+    }
+  ]
+}
