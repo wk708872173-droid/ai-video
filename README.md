@@ -151,6 +151,8 @@ python -m hailuo_video --help
 | **负提示词** | 自动 | 生成路径首次具备"禁止出现什么"的表达（能力声明式，不发未确认字段） |
 | **运动参数知识库** | `--knowledge-path knowledge/motion_params.json` | 检索历史配方与实测经验（默认**不写**，避免污染人工维护的种子数据） |
 | **主体感知竖屏裁剪** | `to_vertical(..., subject_box=...)` | 偏心主体不再被中心裁掉（纯 PIL 显著性，零新依赖） |
+| **角色语音一致性** | 自动（按说话角色分配） | 此前全片所有角色与旁白共用一个音色；现在同一角色跨镜头恒定同音色，探测式分配保证同片子内不撞音色 |
+| **.env 配置真正生效** | 自动 | 此前 20 个键（Hailuo 视频端点 / TTS 音色 / YouTube 凭据…）配了永不生效；现在统一 loader + 单一白名单 + 漂移检测测试 |
 
 ---
 
@@ -277,6 +279,7 @@ python -m pytest tests/ -q
 | `script` JSON 解析 | `MockBackend` 100% 覆盖 | 真 MiniMax-M3 烟测 |
 | `tts` 字幕格式 | .vtt 自动出，srt 待转 | ffmpeg 或脚本转换 |
 | `concat` 字幕烧录 | Windows 反斜杠已处理 | 跨平台烟测 |
+| `.env` 里的未知 key | 打 `[dotenv] [WARN]` 并忽略 | 检查是否拼错（只打 key 名，不打值） |
 | Hailuo 多角色 I2V 颜色合并 | 双角色同框会被归一化成同色 | 模型侧限制；短期用 `motion_complexity=simple` + 单镜构图规避 |
 | MiniMax OSS URL 过期后无法重新托管 | 过期只能重新生成（有漂移风险） | Gemini 后端走本地字节无此问题；MiniMax 侧需托管方案 |
 | Hailuo 单段崩溃率 ~1/3 | 样本估计，待更大样本确认 | 跨镜门禁 + fps 归一化只能缓解拼接放大，单段根因未解 |
