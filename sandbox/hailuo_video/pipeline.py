@@ -81,6 +81,8 @@ def load_storyboard(path: str | Path) -> Storyboard:
             appearance=str(c.get("appearance", "")),
             personality=list(c.get("personality", []) or []),
             color_palette=list(c.get("color_palette", []) or []),
+            # V3.9 W-C（REQ-403）：角色音色（空 = 按角色名确定性分配）
+            voice=str(c.get("voice", "") or ""),
         )
         for c in chars_raw if isinstance(c, dict)
     ]
@@ -119,6 +121,9 @@ def load_storyboard(path: str | Path) -> Storyboard:
             static_visual=str(s.get("static_visual", "") or ""),
             dynamic_narrative=str(s.get("dynamic_narrative", "") or ""),
             color_lock=str(s.get("color_lock", "") or ""),
+            # V3.9 W-C：角色语音一致性（缺失 → 空串）
+            voice=str(s.get("voice", "") or ""),
+            speaker=str(s.get("speaker", "") or ""),
         )
         for i, s in enumerate(shots_raw) if isinstance(s, dict)
     ]

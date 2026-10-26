@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -169,15 +170,28 @@ class MiniMaxMotionBackend(MotionBackend):
     def generate(self, prompt, *, duration=DEFAULT_VIDEO_DURATION,
                  resolution=DEFAULT_VIDEO_RESOLUTION,
                  output_path="", **kwargs):
-        # V3.1.2：I2V 支持 — task dict 里有 first_frame_image / last_frame_image 时启用
+        # V3.1.2：I2V 支持 — task dict 里有 first_frame_image 时启用。
+        #
+        # V3.9（BUG-119）**移除 last_frame_image 分支**：该字段被 API **拒绝**
+        # （2013），实测记录见 logs/_verify_last_frame_image_20261016/SUMMARY.md
+        # —— "被拒（2013）……已写代码但**永远走不到**"。留着它只会在有人误传时
+        # 换来一个 2013 的 4xx，且 docstring 会误导下一个人以为双锚定可用。
+        # 现在：只有 first_frame_image 能触发 I2V；误传 last_frame_image 会告警
+        # （R4：不静默忽略）并回退到 T2V。
         first_frame = kwargs.get("first_frame_image") or ""
         last_frame = kwargs.get("last_frame_image") or ""
-        if first_frame or last_frame:
+        if last_frame:
+            print(
+                "[motion] [WARN] last_frame_image 不被 MiniMax 视频 API 支持"
+                "（实测 2013，见 logs/_verify_last_frame_image_20261016/SUMMARY.md）"
+                "→ 已忽略。只支持 first_frame_image 单锚定。",
+                file=sys.stderr,
+            )
+        if first_frame:
             return self._generate_i2v(
                 prompt=prompt, duration=duration, resolution=resolution,
                 output_path=output_path,
                 first_frame_image=first_frame,
-                last_frame_image=last_frame,
                 seed=kwargs.get("seed"),
                 motion_lock=kwargs.get("motion_lock"),
             )
@@ -208,21 +222,24 @@ class MiniMaxMotionBackend(MotionBackend):
         )
 
     def _generate_i2v(self, *, prompt, duration, resolution, output_path,
-                       first_frame_image="", last_frame_image="",
+                       first_frame_image="",
                        seed=None, motion_lock=None):
-        """V3.1.2 I2V 路径 — first_frame_image + last_frame_image 锚点。
+        """V3.1.2 I2V 路径 — **first_frame_image 单锚定**。
 
         走与 T2V 相同的 submit → poll → retrieve → download 流程，
-        body 加 first_frame_image / last_frame_image / seed 等字段。
+        body 加 first_frame_image / seed 等字段。
+
+        V3.9（BUG-119）：移除了 last_frame_image 锚点 —— 实测该字段被 API
+        拒绝（2013），见 logs/_verify_last_frame_image_20261016/SUMMARY.md。
+        "双锚定"（first + last）是**不可行**的优化路径，别再走。
         """
         if not output_path:
             raise MotionError("MiniMaxMotionBackend._generate_i2v requires 'output_path'")
-        if not first_frame_image and not last_frame_image:
-            raise MotionError("I2V 必须至少指定 first_frame_image 或 last_frame_image 之一")
+        if not first_frame_image:
+            raise MotionError("I2V 必须指定 first_frame_image")
 
         task_id = self._submit(prompt, duration, resolution,
                                first_frame_image=first_frame_image,
-                               last_frame_image=last_frame_image,
                                seed=seed)
         if not task_id:
             raise MotionError("MiniMax I2V 未返回 task_id")
@@ -237,19 +254,17 @@ class MiniMaxMotionBackend(MotionBackend):
             extra={
                 "file_id": file_id, "download_url": download_url, "mode": "i2v",
                 "first_frame_image": first_frame_image,
-                "last_frame_image": last_frame_image,
                 "seed": seed, "motion_lock": motion_lock or {},
             },
         )
 
     def _submit(self, prompt, duration, resolution, *, first_frame_image="",
-                last_frame_image="", seed=None):
+                seed=None):
         body = {"model": video_model_id(), "prompt": prompt, "duration": duration, "resolution": resolution}
-        # V3.1.2 I2V：first_frame_image / last_frame_image 用 url（OSS / 公网 url）
+        # V3.1.2 I2V：first_frame_image 用 url（OSS / 公网 url）
+        # V3.9（BUG-119）：移除 last_frame_image（API 拒绝，2013）
         if first_frame_image:
             body["first_frame_image"] = first_frame_image
-        if last_frame_image:
-            body["last_frame_image"] = last_frame_image
         if seed is not None:
             body["seed"] = seed
         url = video_endpoint()
@@ -265,7 +280,6 @@ class MiniMaxMotionBackend(MotionBackend):
                     except Exception:
                         status = 200  # 单元测试 FakeResp 没 status 时默认成功
                 # logger 没引入到此文件，避免依赖；打印到 stderr 即可
-                import sys
                 print(f"  status  = {status}", file=sys.stderr)
                 print(f"  raw     = {raw}", file=sys.stderr)
         except urllib.error.HTTPError as exc:

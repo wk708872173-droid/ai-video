@@ -316,6 +316,46 @@
       ],
       "importance": 4,
       "note": "auto_dev.py 的 pytest 路径参数传的是字面量 'TESTS' 而非 str(TESTS) → pytest 回退到 testpaths（测试集对、门禁一直绿）但不加载 tests/conftest.py → 门禁一直在少跑 conftest。已修 + 加回归测试。教训：门禁绿 ≠ 门禁跑对了。"
+    },
+    {
+      "id": "D-031",
+      "topic": "role-voice-consistency",
+      "keywords": [
+        "role",
+        "voice",
+        "consistency",
+        "V3.9"
+      ],
+      "importance": 4,
+      "note": "角色语音一致性（REQ-403）：音色分配到角色而非镜头 —— 探测式分配保证同片子内不撞音色、旁白音色不在角色池内。此前全片所有角色与旁白共用一个全局音色，与'角色一致性'核心价值主张冲突。依据 arXiv:2405.09768（speaker consistency 维度）、2505.17320（按角色准备音色）、2210.05979（说话人域偏移）。"
+    },
+    {
+      "id": "D-032",
+      "topic": "last-frame-dead-code-cleanup",
+      "keywords": [
+        "last",
+        "frame",
+        "dead",
+        "code",
+        "cleanup",
+        "V3.9"
+      ],
+      "importance": 3,
+      "note": "清理 last_frame_image 死代码（BUG-119）：该字段被 MiniMax 视频 API 拒绝（2013，2026-10-16 实测），'双锚定'是已推翻的优化路径。删除 generate 分支 / _generate_i2v 形参 / _submit body 拼装；误传时告警并回退 T2V（R4 不静默忽略）。"
+    },
+    {
+      "id": "D-033",
+      "topic": "ci-same-source-as-gate",
+      "keywords": [
+        "ci",
+        "same",
+        "source",
+        "as",
+        "gate",
+        "V3.9"
+      ],
+      "importance": 4,
+      "note": "CI 与本地门禁同源：.github/workflows/ci.yml 跑同一个 scripts/auto_dev.py（py3.11/3.13），不另起 pytest 命令（'CI 绿了'不等于'本地门禁也绿'）。附带修 dev extra 缺 pytest-cov、secret scan 打印凭据本身、CI 上 secret scan 空转三个问题。"
     }
   ],
   "lessons": [

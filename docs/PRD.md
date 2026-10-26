@@ -64,7 +64,7 @@
 | EditingAgent AI 剪辑 MCP 集成（CutStudio / SeeCut） | ⏳ P2 未做 | REQ-303.e |
 | YouTube 真上传（OAuth + resumable upload） | ⏳ P3 未做（stub 已就位） | REQ-401 (real) |
 | 面部相似度自动比对 + 重试 | ⏳ P3 未做（hash 后端已有，`face_recognition` 仍是 stub） | REQ-402 |
-| 角色语音一致性（per-shot voice override） | ⏳ P3 未做 | REQ-403 |
+| 角色语音一致性（per-shot voice override） | ✅ V3.9 已交付（按说话角色分配 + 探测式防撞车） | REQ-403 |
 | 多 scene 跨场一致性 | ⏳ P3 未做 | REQ-404 |
 | 实时预览 | ⏳ P3 未做 | REQ-405 |
 | 运动参数知识库 | ⏳ P3 未做 | REQ-406 |
@@ -404,7 +404,7 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 - **依赖**：face_recognition 或 insightface 库
 - **状态**：未做
 
-#### REQ-403 · 角色语音一致性 `[P3 future]`
+#### REQ-403 · 角色语音一致性 ✅ V3.9 已交付
 - **验收**：5 shots 同一角色的 Edge-TTS voice 一样
 - **优先级**：P3
 - **状态**：TTSAgent 已支持，但 shot 级 voice override 待加
@@ -461,8 +461,14 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 | BUG-116 | 🟡 中 | **Hailuo 单段崩溃率 ~1/3**（样本估计，待更大样本确认） | 🟡 **部分修**（D-023）。跨镜门禁 + fps 归一化只能缓解拼接放大，单段根因未解 |
 | BUG-117 | 🟡 中 | **MiniMax OSS URL 过期后无重新托管途径**（无上传端点）→ 过期只能重新生成（漂移风险） | ⬜ **未修**。Gemini 后端走本地字节无此问题；MiniMax 侧待用户提供托管方案 |
 | BUG-118 | 🟢 低 | **`editing` phase 的 `_collect_video_paths_for_editing` 含一段与首段完全相同的死分支** | ✅ **V3.8 已修**（D-027）。死分支已删 |
-| BUG-119 | 🟢 低 | **`last_frame_image` 死代码**：`_generate_i2v` 接受 last_frame 但 API 不支持（2013） | ⬜ **未修**。本轮未触及 `motion_backend.py`（红线） |
+| BUG-119 | 🟢 低 | **`last_frame_image` 死代码**：`_generate_i2v` 接受 last_frame 但 API 不支持（2013） | ✅ **V3.9 已修**。已删分支与 body 拼装；误传时告警并回退 T2V |
 | BUG-120 | 🟢 低 | **PRD 声称 Task Scheduler 脚本待生成，但 `scripts/daily_cron_setup.py` 已存在** | ⬜ **未修**。文档漂移，待下次文档批处理 |
+| BUG-121 | 🔴 高 | **`.env` 白名单漂移**：代码共读 44 个 env key，能从 `.env` 加载的只有 24 个 → `MINIMAX_VIDEO_*`（Hailuo 视频端点）/ `EDGE_TTS_*`（音色）/ `YOUTUBE_*`（凭据）等 **20 个配了永不生效** | ✅ **V3.9 已修**（D-029）。统一 loader + 单一白名单 + 不变量测试（正则扫源码）|
+| BUG-122 | 🟠 中 | **`auto_dev.py` 的 pytest 路径参数是字面量 "TESTS"** → 门禁跑测试时**不加载 `tests/conftest.py`**（conftest 按 args 目录链加载）| ✅ **V3.9 已修**（D-030）。改 `str(TESTS)` + 2 条回归测试 |
+| BUG-123 | 🟠 中 | **secret scan 把凭据本身打进日志**（打的是 `m.group()[:30]` = 密钥前 30 字符），且 CI 上工作树干净时扫描**完全空转** | ✅ **V3.9 已修**。改为只打 `***REDACTED***``；diff 为空时退化为整仓扫描 |
+| BUG-124 | 🟠 中 | **`dev` extra 缺 `pytest-cov`** —— 门禁覆盖率步骤用 `--cov`，缺它那步跑不起来 → CI 会因"解析失败"而红 | ✅ **V3.9 已修**。`dev = ["pytest>=7.0", "pytest-cov>=4.0"]` |
+| BUG-125 | 🟡 中 | **全片所有角色与旁白共用一个音色**（`task["voice"]` 是全局值）→ 与"角色一致性"核心价值主张冲突 | ✅ **V3.9 已修**（REQ-403）。按说话角色分配，探测式保证同片子内不撞音色 |
+| BUG-126 | 🟡 中 | **无 CI**：仓库从未有 GitHub Actions —— 门禁只在本地跑，回归靠人记 | ✅ **V3.9 已修**。`.github/workflows/ci.yml` 跑**同一个** `scripts/auto_dev.py`（py3.11/3.13）+ 可选 pre-commit hook |
 
 > 新发现的疑似问题请直接加在此表，并在 §变更日志 留 entry。
 

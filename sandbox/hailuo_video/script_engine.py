@@ -199,6 +199,9 @@ class Character:
     appearance: str
     personality: list[str] = field(default_factory=list)
     color_palette: list[str] = field(default_factory=list)
+    # V3.9 W-C（REQ-403）：角色音色。留空 = 由 voice_cast 按角色名**确定性**分配
+    # （同一角色跨天 / 跨项目 / 跨镜头恒定同音色）。
+    voice: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -266,6 +269,10 @@ class Shot:
     static_visual: str = ""       # 静态视觉条件：角色外观 + 场景 + 构图 + 光线 → image prompt（首帧）
     dynamic_narrative: str = ""   # 动态叙事条件：动作 + 运镜 + 情绪变化 → motion prompt（I2V）
     color_lock: str = ""          # 色彩锁定：跨镜色基调（如 "warm-gold"）→ 连续性门禁 + 后期 LUT
+
+    # ---------- V3.9 W-C：角色语音一致性（REQ-403） ----------
+    voice: str = ""        # 本镜音色覆盖（edge-tts 音色名或别名）；空 = 按角色分配
+    speaker: str = ""      # 本镜说话角色名；空 = 从对白里推断
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -486,6 +493,9 @@ def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
         static_visual=str(s.get("static_visual", "") or ""),
         dynamic_narrative=str(s.get("dynamic_narrative", "") or ""),
         color_lock=str(s.get("color_lock", "") or ""),
+        # V3.9 W-C：角色语音一致性（缺失 → 空串）
+        voice=str(s.get("voice", "") or ""),
+        speaker=str(s.get("speaker", "") or ""),
         emotion_arc_point=emotion_arc,
     )
 
@@ -640,6 +650,9 @@ def _parse_shots_payload(text: str, n_shots: int) -> list[Shot]:
             static_visual=str(s.get("static_visual", "") or ""),
             dynamic_narrative=str(s.get("dynamic_narrative", "") or ""),
             color_lock=str(s.get("color_lock", "") or ""),
+            # V3.9 W-C：角色语音一致性（LLM 不返也不报错）
+            voice=str(s.get("voice", "") or ""),
+            speaker=str(s.get("speaker", "") or ""),
             emotion_arc_point=emotion_arc,
         ))
     if len(out) != n_shots:

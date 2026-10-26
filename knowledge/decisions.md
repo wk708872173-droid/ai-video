@@ -416,3 +416,80 @@
   2. pytest 的每个路径参数必须真实存在
 - 验证：`tests/test_auto_dev.py` +2 项；门禁重跑 4 步全 PASS。
 - 附带认知：**门禁绿 ≠ 门禁跑对了**。门禁自身的命令也要被测（本仓的 `tests/test_auto_dev.py` 用 `_FakeRun` 记录 subprocess 调用，是这个模式的好例子）。
+
+## D-031 角色语音一致性：音色分配到**角色**，不是镜头（REQ-403）
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`orchestrator._build_task` 的 tts 分支只有**一个全局 voice**
+  （`task["voice"] = self.config.voice`）→ 整条片子所有角色、所有旁白**一个音色**。
+  这与本项目"角色一致性"的核心价值主张直接冲突：画面上每只狗都长一样，声音上只有一个人。
+  PRD 一直把 REQ-403 标为"⏳ P3 未做"。
+- 文献依据：
+  - **arXiv:2405.09768**（TTS 评估）：五个评估维度之一就是 **speaker consistency**
+    （同一说话人在不同 utterance 里音色要稳定）→ 本模块要满足的不变量。
+  - **arXiv:2505.17320**（角色驱动 TTS）：**按角色**准备音色（每角色专属音色），
+    不是全局一个音色 → 分配粒度是 character，不是 shot。
+  - **arXiv:2210.05979**（ASCL，零样本多说话人 TTS）：说话人域偏移是零样本 TTS 的
+    主要难题 → 对本项目（edge-tts 固定音色池）意味着**角色→音色的映射必须稳定**。
+- 决策：
+  1. 新增 `sandbox/hailuo_video/voice_cast.py`：`VoiceCast`（角色→音色分配表）、
+     `speaker_of()`（说话角色判定）、`resolve_voice_for_shot()`。
+  2. 优先级：`shot.voice` > `character.voice` > **探测式分配** > 全局默认。
+  3. 旁白（voiceover）与对白（dialogue）分开：旁白用叙述者音色，**该音色不在角色池里**。
+  4. 角色撞音色 → 记 event 告警（不阻断，但必须可见）。
+- 两个在实现中**被自己的测试抓出来**的设计错误（值得记）：
+  1. **旁白音色原本也在角色池里**（都用 Yunxi）→ 某角色可能被分配到与旁白相同的音色
+     → "角色可区分"这条就废了。修：旁白改用 `zh-CN-YunyangNeural`（不在池中），
+     并加断言"旁白音色 ∉ 角色池"。
+  2. **纯哈希分配会撞车**：15 个槽位分 5 个角色，按生日悖论约有一半概率至少撞一次
+     （实测"兔子"与"海龟"都拿到 Xiaohan）。修：改成**探测式**（哈希取起始槽位，
+     已占用则往后找空位）→ 同片子内不同角色音色**必不相同**。
+     代价：若某项目的角色集合/顺序变了，同一角色的音色可能变
+     （同一项目多天跑时角色表通常一致 → 稳定）。
+- 落地要点：
+  1. `Shot` 新增 `voice` / `speaker`；`Character` 新增 `voice`（均带默认值 → 旧 storyboard.json 仍可解析）
+  2. `orchestrator` 挂 `self._voice_cast`（整个 run 内同一角色恒定同音色）+ `_voice_collision_seen`
+  3. **零 API 成本**：只是选一个 edge-tts 音色名，不改合成逻辑
+- 验证：`tests/test_voice_cast.py`（30 项）。
+- 边界：**不按性别/物种猜音色** —— 那是模型的活。要精确指定请在 storyboard 的
+  `characters[].voice` 里写（本仓的角色是犬/猫/鹿/农夫，猜错比不猜更糟）。
+
+## D-032 清理 `last_frame_image` 死代码（BUG-119）
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`logs/_verify_last_frame_image_20261016/SUMMARY.md`（2026-10-16 实测）已判定
+  `last_frame_image` **被 API 拒绝（2013）**，且"已写代码但永远走不到"，并列出
+  "必须做的清理"三项 —— 但那一轮**只做了验证没做清理**（本轮是 V3.8 红线的
+  "不改 motion_backend.py"，留到 V3.9 单独做）。
+- 决策：删除三处 —— ① `generate()` 里 `first_frame or last_frame` 的分支；
+  ② `_generate_i2v()` 的 `last_frame_image` 形参；③ `_submit()` 的 body 拼装。
+  误传 `last_frame_image` 时**告警并回退 T2V**（R4：不静默忽略），
+  而不是一个必然 4xx 的请求。
+- 连带：docstring 里的"双锚定"表述改为"不可行的优化路径，别再走"
+  （DeepSeek Q5 的假设已被实测推翻 —— 留着会误导下一个人）。
+- 验证：`tests/test_motion_last_frame_removed.py`（9 项，含"请求体里绝不能出现
+  last_frame_image"的兜底断言）。
+- 教训：V3.8 定了"不改 motion_backend.py"的红线，代价是这个已知死代码又留了一轮。
+  **红线要写清"为什么"** —— 否则下一轮不知道该不该碰。
+
+## D-033 CI 与本地门禁同源
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：仓库有 GitHub origin（github.com/wk708872173-droid/ai-video）但**从无 CI** ——
+  门禁只在本地跑，回归靠人记；`docs/ARCHITECTURE.md:153` 的 "CI pre-commit hook"
+  待办挂了很久。
+- 选项：
+  - A. CI 跑**同一个** `scripts/auto_dev.py` —— 采纳
+  - B. CI 另起一套 `pytest` 命令 —— 拒绝："CI 绿了"不代表"本地门禁也是绿的"
+    （D-030 的 auto_dev 路径参数 bug 正是"两套行为不一致"的实例）
+  - C. 只加 pre-commit hook，不加 CI —— 拒绝：hook 只在有 commit 时跑，
+    push 到 main 的路径不受保护
+- 决策：**A**。`.github/workflows/ci.yml` 在 push/PR 上跑 `scripts/auto_dev.py --no-commit`
+  （Python 3.11 / 3.13 两档）。另提供**可选**的 `.githooks/pre-commit`
+  （`git config core.hooksPath .githooks` 启用）。
+- 落地要点：
+  1. `dev` extra 补 `pytest-cov` —— 门禁覆盖率步骤用 `--cov`，缺它那步跑不起来
+  2. secret scan 两处修复：不再把凭据打进日志（只打 `***REDACTED***`）；
+     diff 为空（CI 干净工作树）时退化为**整仓扫描**（排除 tests/ 的假凭据），
+     否则 CI 上这一步永远是空转
+- 验证：`tests/test_auto_dev.py` +5 项；门禁 4 步全 PASS。

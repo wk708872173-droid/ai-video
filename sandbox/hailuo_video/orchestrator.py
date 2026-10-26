@@ -184,6 +184,9 @@ class PipelineAgent:
                 for art in existing.artifacts.values():
                     self.registry.add(art)
         self.logger = config.log or StructuredLogger(config.run_dir / "log.jsonl")
+        # V3.9 W-C：角色→音色分配表（整个 run 内同一角色恒定同音色）
+        self._voice_cast = None
+        self._voice_collision_seen: set[tuple[str, tuple[str, ...]]] = set()
         self._agent_lookup = {
             "script_writer": ScriptWriterAgent(),
             "asset_prep": AssetPrepAgent(),
@@ -512,7 +515,12 @@ class PipelineAgent:
             # 对白优先，无对白则用旁白；都无则空
             text = dialogue or voiceover
             task["text"] = text
-            task["voice"] = getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural")
+            # V3.9 W-C（REQ-403）：**角色语音一致性** —— 此前所有角色、所有旁白
+            # 共用一个全局音色。现在按"说话角色"分配，且分配是**确定性**的
+            # （同一角色跨天 / 跨项目 / 跨镜头恒定同音色）。
+            voice, speaker = self._resolve_voice(shot, sb)
+            task["voice"] = voice
+            task["speaker"] = speaker
             task["write_subtitle"] = True
         elif agent_name == "editing":
             # V3.2 自动开发冲刺（轮 6）：editing phase 需要 video_paths + output_path
@@ -576,6 +584,36 @@ class PipelineAgent:
                 used_fields=brief.used_fields,
             )
         return brief
+
+    def _resolve_voice(self, shot: Any, storyboard: Any = None) -> tuple[str, str]:
+        """V3.9 W-C：解出这一镜的音色与说话角色。返回 (voice, speaker)。
+
+        分配表挂在 agent 上（`self._voice_cast`）→ 整个 run 内同一角色恒定同音色。
+        """
+        from hailuo_video.voice_cast import VoiceCast, resolve_voice_for_shot
+
+        if getattr(self, "_voice_cast", None) is None:
+            self._voice_cast = VoiceCast(
+                default_voice=getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural"),
+            )
+        try:
+            voice, speaker = resolve_voice_for_shot(
+                shot, storyboard, cast=self._voice_cast,
+                default_voice=getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural"),
+            )
+            # V3.9 W-C：角色撞音色 → 报出来（"看起来成功、实际有问题"的静默缺陷）
+            for v, names in self._voice_cast.collisions():
+                key = (v, tuple(names))
+                if key not in self._voice_collision_seen:
+                    self._voice_collision_seen.add(key)
+                    self.logger.event(
+                        "voice_collision",
+                        voice=v, characters=list(names),
+                        reason="多个角色共用同一音色 —— 请在 storyboard 的 characters[].voice 里显式指定",
+                    )
+            return voice, speaker
+        except Exception:
+            return getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural"), ""
 
     def _resolve_aspect_ratio(self) -> str:
         """V3.8 缺陷 1：画幅解析优先级 = config 显式值 > backend 自己的 env 默认 > "16:9"。
