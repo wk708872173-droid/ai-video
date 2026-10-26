@@ -347,3 +347,53 @@ def test_clean_worktree_skips_cleanly(monkeypatch):
     monkeypatch.setattr(auto_dev, "run", fake)
     assert auto_dev.step_commit(None, coverage_ok=90.0) is True
     assert not [c for c in _git_calls(fake) if "commit" in c]
+
+
+def _args(**kwargs):
+    """step_tests 只读 args.coverage —— 用最小 namespace 即可。"""
+    import argparse
+    kwargs.setdefault("coverage", False)
+    return argparse.Namespace(**kwargs)
+
+
+
+# ---------- V3.9：门禁的 pytest 调用必须是**路径**，不是字面量 "TESTS" ----------
+
+def test_step_tests_passes_real_tests_path(monkeypatch):
+    """V3.9 回归：pytest 的路径参数必须是 `str(TESTS)`。
+
+    此前传的是字面量字符串 "TESTS"（变量名漏进了命令行）→ pytest 收到一个
+    不存在的路径 → 回退到 pyproject 的 testpaths，**但不会加载 tests/conftest.py**
+    （conftest 按 args 的目录链加载）→ 门禁跑测试时 conftest 里的 fixture 与
+    session 级环境准备被静默跳过。
+    实测：V3.9 加的 `isolated_env` fixture 在门禁里直接报 "fixture not found"。
+    """
+    fake = _FakeRun()
+    monkeypatch.setattr(auto_dev, "run", fake)
+    monkeypatch.setattr(
+        auto_dev, "step_secret_scan", lambda a: True, raising=False
+    )
+    auto_dev.step_tests(_args())
+
+    pytest_calls = [c for c in fake.calls if "pytest" in c]
+    assert pytest_calls, "没跑 pytest"
+    cmd = pytest_calls[0]
+    assert "TESTS" not in cmd, f"命令里仍有字面量 TESTS：{cmd}"
+    assert str(auto_dev.TESTS) in cmd, f"pytest 没拿到真实 tests 路径：{cmd}"
+    assert Path(str(auto_dev.TESTS)).is_dir()
+
+
+def test_step_tests_uses_a_path_that_exists(monkeypatch):
+    """pytest 的每个路径参数都必须真实存在（否则 conftest 不会被加载）。"""
+    fake = _FakeRun()
+    monkeypatch.setattr(auto_dev, "run", fake)
+    auto_dev.step_tests(_args())
+    cmd = [c for c in fake.calls if "pytest" in c][0]
+    for arg in cmd:
+        if arg.startswith("--") or arg.startswith("-"):
+            continue
+        if arg in ("python", "-m", "pytest", "q"):
+            continue
+        p = Path(arg)
+        if p.suffix == ".py" or p.is_dir():
+            assert p.exists(), f"pytest 参数 {arg!r} 不存在"

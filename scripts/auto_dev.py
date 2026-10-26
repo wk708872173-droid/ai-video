@@ -76,8 +76,16 @@ def header(title: str) -> None:
 
 def step_tests(args) -> bool:
     header("Step 1: pytest")
+    # V3.9 修复：此前这里传的是**字面量字符串** "TESTS"（变量名漏进了命令行），
+    #   而非路径 `str(TESTS)`。pytest 收到一个不存在的路径参数 → 回退到
+    #   pyproject.toml 的 `testpaths`，**但不会加载 tests/conftest.py**
+    #   （conftest 是按 args 的目录链加载的）→ 门禁跑测试时 conftest 里的
+    #   fixture / session 级环境准备全部被跳过。
+    #   实测：V3.9 加的 `tests/conftest.py`（isolated_env fixture +
+    #   CHARACTER_BIBLE_DISABLE）在门禁里直接报 "fixture not found"。
+    #   门禁的行为必须与 README 写的 `python -m pytest tests/ -q` 一致。
     cmd = [
-        "python", "-m", "pytest", "TESTS", "-q",
+        "python", "-m", "pytest", str(TESTS), "-q",
         "--tb=line",
         "-p", "no:cacheprovider",
         "--ignore=tests/test_tts_engine.py",

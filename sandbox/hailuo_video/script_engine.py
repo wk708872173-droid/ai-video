@@ -44,25 +44,14 @@ class LLMError(RuntimeError):
     """LLM 调用 / 解析失败。"""
 
 
-_DOTENV_KEYS = (
-    "MINIMAX_API_KEY",
-    "MINIMAX_BASE_URL",
-    "MINIMAX_MODEL",
-    # F3 修复（2026-10-22）：以下 4 个键此前只在 image_engine._DOTENV_KEYS 里列出，
-    # 而真正生效的 .env 加载白名单是本元组 —— 结果从 .env 配的这几项**从未生效**，
-    # 只有进程 env 才认。这是「文档/配置说明与实现不一致」的老毛病（同 D-018/D-019）。
-    "MINIMAX_IMAGE_MODEL",
-    "MINIMAX_IMAGE_RESPONSE_FORMAT",
-    "MINIMAX_IMAGE_ASPECT_RATIO",
-    "MINIMAX_IMAGE_N",
-    "GEMINI_API_KEY",
-    "GEMINI_BASE_URL",
-    "GEMINI_IMAGE_MODEL",
-    "GEMINI_IMAGE_ASPECT_RATIO",
-    "GEMINI_IMAGE_N",
-    # V3.8 W6：VLM 评审器用的多模态模型（与出图模型分开）
-    "GEMINI_VLM_MODEL",
-)
+# V3.9：可加载白名单的**唯一事实源**在 `hailuo_video.dotenv`。
+# 本元组保留为兼容别名（image_engine 等处曾 import 它），值取自共享定义。
+# 历史：D-018 / F3（2026-10-22）就是"两套白名单各管一半"导致的漏键事故 ——
+# 那次只把 image 的 4 个键补进来，video / tts / youtube 的 20 个键仍然漏着。
+from hailuo_video.dotenv import LOADABLE_ENV_KEYS as _LOADABLE_ENV_KEYS
+
+_DOTENV_KEYS = tuple(sorted(_LOADABLE_ENV_KEYS))
+
 
 DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"  # D-013 用户核实：CN 域
 DEFAULT_MODEL = "MiniMax-M3"
@@ -70,35 +59,17 @@ REQUEST_TIMEOUT = 60
 
 
 def _load_dotenv() -> None:
-    """读仓库根 .env（多路径 fallback）。沿用 V2-Local 的不覆盖已有模式。
+    """读仓库根 .env。
 
-    路径查找（DingTalk CLI / 跨平台）：
-      1. 当前工作目录下的 .env（最优先 — CLI 用户通常 cd 到项目根）
-      2. PACKAGE_ROOT.parent.parent/.env（package 邻接的 ai_video/ 根）
-      3. ~/ai_video/.env（$HOME 兜底）
+    V3.9：委托给**统一 loader** `hailuo_video.dotenv`（单一白名单 + 多路径合并）。
+    旧实现自带一份白名单，只认 14 个 key —— 而代码里读了 44 个，
+    导致 `MINIMAX_VIDEO_*` / `EDGE_TTS_*` / `YOUTUBE_*` 等 20 个
+    在 .env 里配了**永远不生效**（详见 dotenv.py 模块 docstring）。
+
+    保留本函数名是因为 `image_engine.py` 直接 import 它（向后兼容）。
     """
-    candidate_paths = [
-        Path.cwd() / ".env",                                # CWD
-        PACKAGE_ROOT.parent.parent / ".env",               # 项目根
-        Path.home() / "ai_video" / ".env",                 # $HOME 兜底
-    ]
-    for path in candidate_paths:
-        if not path.is_file():
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key not in _DOTENV_KEYS or key in os.environ:
-                continue
-            os.environ[key] = val.strip().strip('"').strip("'")
-        return  # 找到就停止
+    from hailuo_video.dotenv import load_dotenv
+    load_dotenv()
 
 
 _load_dotenv()

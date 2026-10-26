@@ -64,3 +64,21 @@
   1. 任何 `except: pass` / `except SomeError: pass` 都要问："调用方怎么知道出事了？" —— 答案不能是"不知道"
   2. 降级不是不能做，而是**必须留痕**：降级信息进返回值/日志/告警三选一以上
   3. "0 bytes 但报 OK" 这种自相矛盾的输出是代码味道，值得逐个排查
+## L-014 pytest 的 monkeypatch.delenv(raising=False) 不登记 undo → 环境变量泄漏
+- 时间：2026-10-26（V3.9）
+- 现象：`tests/test_dotenv.py` 里 `monkeypatch.delenv("MINIMAX_VIDEO_ENDPOINT", raising=False)` + `load_dotenv(...)` 之后，**该键仍留在 `os.environ` 里**，泄漏给后续测试 —— 实测污染到 `tests/test_motion.py`，让后者拿到错误的端点 URL 而失败。
+- 根因：pytest 的 `MonkeyPatch.delitem` 实现是
+  ```python
+  if name not in dic:
+      if raising: raise KeyError(name)
+  else:
+      self._setitem.append((dic, name, dic.get(name, notset)))
+      del dic[name]
+  ```
+  → **键本来不存在时，`raising=False` 直接返回，什么都不记**。于是后续由**被测代码**写入的值没有 undo 记录，测试结束后不会清掉。
+  （`monkeypatch.setenv` 则不同：它总是登记 `(dic, name, notset)`，undo 时会 `del`。）
+- 修复：`tests/conftest.py` 增加 `isolated_env` fixture —— 对 `os.environ` 做**完整快照 / 还原**，兜住所有情况（不只 monkeypatch 改过的键）。
+- 对账动作：
+  1. 任何**被测代码会写** `os.environ` 的测试，都要带 `isolated_env`（或自己 snapshot/restore）—— 只靠 `monkeypatch` 不安全
+  2. "单独跑绿、全量跑红" 通常是**环境/全局状态泄漏**，不是随机性：先怀疑 `os.environ` / `sys.path` / cwd / 全局单例
+  3. `monkeypatch.delenv(k, raising=False)` 不等于"测试后这个键会被清掉"

@@ -53,30 +53,14 @@ _DOTENV_KEYS = (
 # ---------- 配置读取 ----------
 
 def _load_dotenv() -> None:
-    """读仓库根 .env（同 script_engine 的多路径 fallback 逻辑）。"""
-    from pathlib import Path
-    candidate_paths = [
-        Path.cwd() / ".env",
-        PACKAGE_ROOT.parent.parent / ".env",
-        Path.home() / "ai_video" / ".env",
-    ]
-    for path in candidate_paths:
-        if not path.is_file():
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key not in _DOTENV_KEYS or key in os.environ:
-                continue
-            os.environ[key] = val.strip().strip('"').strip("'")
-        return
+    """读仓库根 .env。
+
+    V3.9：委托给**统一 loader** `hailuo_video.dotenv`。
+    旧实现是本仓**第二套**独立 loader + 独立白名单 —— 与 `script_engine` 那套
+    各管一半，两边都漏键（见 dotenv.py 模块 docstring）。现在只有一套。
+    """
+    from hailuo_video.dotenv import load_dotenv
+    load_dotenv()
 
 
 _load_dotenv()

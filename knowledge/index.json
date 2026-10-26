@@ -286,6 +286,36 @@
       ],
       "importance": 4,
       "note": "V3.8 六条工作流的文献映射总览（16 组 arXiv 检索 → file:line 级缺陷）。方法论教训：'实现已存在但从未接线'是一类独立缺陷（prompts_director 的 parse/apply 与 render_storyboard_prompt 都有单测但生产零调用），检索文献前应先做可达性审计。"
+    },
+    {
+      "id": "D-029",
+      "topic": "unified-dotenv-loader",
+      "keywords": [
+        "dotenv",
+        "env",
+        "白名单",
+        "配置",
+        "MINIMAX_VIDEO",
+        "EDGE_TTS",
+        "YOUTUBE",
+        "漂移"
+      ],
+      "importance": 5,
+      "note": "统一 .env loader（唯一实现 + 唯一白名单）：代码读 44 个 key，V3.9 前只有 24 个能从 .env 加载 —— MINIMAX_VIDEO_*/EDGE_TTS_*/YOUTUBE_* 等 20 个配了永不生效（含 Hailuo 视频端点与 YouTube 凭据）。白名单漂移已复发三次（D-018 → F3 → 本次），故用不变量测试（正则扫源码）根治，而非继续补键。"
+    },
+    {
+      "id": "D-030",
+      "topic": "auto-dev-pytest-path-literal",
+      "keywords": [
+        "auto_dev",
+        "门禁",
+        "pytest",
+        "TESTS",
+        "conftest",
+        "路径参数"
+      ],
+      "importance": 4,
+      "note": "auto_dev.py 的 pytest 路径参数传的是字面量 'TESTS' 而非 str(TESTS) → pytest 回退到 testpaths（测试集对、门禁一直绿）但不加载 tests/conftest.py → 门禁一直在少跑 conftest。已修 + 加回归测试。教训：门禁绿 ≠ 门禁跑对了。"
     }
   ],
   "lessons": [
@@ -373,6 +403,20 @@
       ],
       "importance": 5,
       "note": "静默降级要留痕：'看起来像成功'是最大的坑。except: pass / 0 bytes 但报 OK / 过期 URL 静默使用 —— R4 的正确理解不是'不要抛异常'，而是'不要让调用方误以为成功'。降级信息必须进返回值或日志。"
+    },
+    {
+      "id": "L-014",
+      "topic": "monkeypatch-delenv-no-undo",
+      "keywords": [
+        "pytest",
+        "monkeypatch",
+        "delenv",
+        "环境变量",
+        "泄漏",
+        "测试隔离"
+      ],
+      "importance": 5,
+      "note": "monkeypatch.delenv(key, raising=False) 在键本来不存在时不登记 undo → 被测代码后续写入的值泄漏给其他测试（实测污染 test_motion）。改用 conftest 的 isolated_env fixture 做 os.environ 完整快照/还原。'单独跑绿、全量跑红' 通常是环境/全局状态泄漏。"
     }
   ]
 }

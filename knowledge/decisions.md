@@ -371,3 +371,48 @@
   | W6 VLM 评审接口 | REQ-407 前置 | 2603.12310、2509.22799、2604.28078 |
 
 - 方法论教训（值得沉淀）：**"实现已存在但从未接线"是一类独立缺陷** —— `prompts_director.py` 的 `parse_dop_response` / `apply_dop_to_shot` 早就实现且有单测，生产代码零调用；`render_storyboard_prompt` 同理。检索文献前应先做**可达性审计**（"谁调用它"），而不是假设"没有这个功能"。
+
+## D-029 统一 .env loader：白名单漂移已复发三次，本轮用**不变量测试**根治
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：同一类缺陷在仓库里复发了三次，每次都是"**白名单与代码/文档不同步**"：
+  1. **D-018**：`image_engine` 有自己的 `_DOTENV_KEYS`，但真正生效的是 `script_engine` 那份 → `MINIMAX_IMAGE_*` 从未生效。
+  2. **F3（2026-10-22）**：把 image 的 4 个键补进 `script_engine` 白名单 —— 但 video / tts / youtube 的键仍然漏着。
+  3. **V3.9（本次）**：代码共读 **44** 个 env key，可加载的只有 **24** 个 → **20 个**在 `.env` 里配了永远不生效。
+- V3.9 实测（`.env` 写入 4 个 key 后 import）：
+
+  | key | V3.9 之前 | 后果 |
+  |---|---|---|
+  | `MINIMAX_VIDEO_ENDPOINT` | **未加载** | Hailuo 视频端点无法配置（切国际域只能改代码常量） |
+  | `EDGE_TTS_VOICE` | **未加载** | 配音音色 / 语速配置失效 |
+  | `YOUTUBE_CLIENT_ID` | **未加载** | 用户照 `.env.example` 填了凭据，代码仍报"凭据缺失" |
+  | `LOCAL_VIDEO_DEVICE` | 已加载 | （唯一生效的 —— `local_client.py` 有第二套 loader） |
+- 选项：
+  - A. 统一 loader + 单一白名单 + **不变量测试**守住漂移 —— 采纳
+  - B. 继续往两份白名单里补键 —— 拒绝：第三次的教训就是"补键"治不了漂移
+  - C. 改成"全量加载 .env，不设白名单" —— 拒绝：会把拼错的 key 静默注入环境；且 `.env` 里可能有不该进 env 的东西
+- 决策：**A**。新增 `sandbox/hailuo_video/dotenv.py`（唯一 loader，唯一白名单 `LOADABLE_ENV_KEYS`）；`script_engine` 与 `local_client` 的两份副本都改为薄封装并删除。
+- 落地要点：
+  1. **多路径合并**（旧行为"找到第一个 .env 就 return" → cwd 下的 .env 存在时仓库根的完全不看）
+  2. **未知 key 告警**：白名单外的 key 打 `[dotenv] [WARN]`（**只打 key 名不打值**）—— 治拼错
+  3. **不变量测试**（`tests/test_dotenv.py`）—— 这是本条决策的真正价值：
+     - 代码里 `os.environ.get("X")` 的每个 X 都必须可加载（**正则扫源码**）
+     - `.env.example` 里声明的每个 key 都必须可加载（或登记为 `EXTERNAL_ENV_KEYS`）
+     - 白名单里的每个 key 都必须在 `.env.example` 里有说明（防"隐形 key"）
+     新增 env key 忘了加白名单 → 测试立刻变红。
+  4. `.env.example` 补齐此前**从未被文档化**的 13 个键（EDGE_TTS_* / YOUTUBE_* / MINIMAX_FILE_RETRIEVE_ENDPOINT / CHARACTER_BIBLE_* / DAILY_* / HAILUO_VIDEO_PROJECT_ID）
+- 验证：`tests/test_dotenv.py`（18 项）；实测 4 个此前失效的键现已全部生效。
+- 教训见 **L-014**（测试侧的另一条泄漏通道）。
+
+## D-030 auto_dev.py 的 pytest 路径参数是字面量 "TESTS" —— 门禁一直在少跑 conftest
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`scripts/auto_dev.py:80` 的 pytest 命令传的是**字面量字符串** `"TESTS"`（变量名漏进了命令行），而不是 `str(TESTS)`。
+- 影响：pytest 收到一个**不存在的路径参数** → 回退到 `pyproject.toml` 的 `testpaths`（所以测试集是对的、门禁一直是绿的），**但 `tests/conftest.py` 不会被加载** —— conftest 是按 **args 的目录链**加载的，args 指向不存在的路径时整条链都取不到。
+  - V3.9 新增 `tests/conftest.py`（`isolated_env` fixture + session 级 `CHARACTER_BIBLE_DISABLE`）在门禁里直接报 `fixture 'isolated_env' not found` → 门禁红了才暴露出来。
+  - 更早的隐患：`tests/conftest.py` 之前不存在，所以这个 bug 一直没被触发。
+- 决策：改成 `str(TESTS)`，并加两条回归测试锁住：
+  1. pytest 的路径参数必须是 `str(TESTS)`（不能出现字面量 "TESTS"）
+  2. pytest 的每个路径参数必须真实存在
+- 验证：`tests/test_auto_dev.py` +2 项；门禁重跑 4 步全 PASS。
+- 附带认知：**门禁绿 ≠ 门禁跑对了**。门禁自身的命令也要被测（本仓的 `tests/test_auto_dev.py` 用 `_FakeRun` 记录 subprocess 调用，是这个模式的好例子）。
