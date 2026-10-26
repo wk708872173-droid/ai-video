@@ -231,6 +231,33 @@ XxxBackend (ABC)         # 抽象接口
 
 ---
 
+## 🧪 测试与 CI
+
+### 本地门禁（唯一权威命令）
+
+```bash
+python scripts/auto_dev.py            # 全门禁 + 自动 commit
+python scripts/auto_dev.py --no-commit  # 只跑门禁，不提交
+```
+
+四步：pytest → secret scan → py_compile 语法检查 → 覆盖率门禁（≥ 80%）。
+
+### CI（V3.9 新增）
+
+`.github/workflows/ci.yml` 在 **push / PR** 上跑**同一个** `scripts/auto_dev.py`
+（Python 3.11 / 3.13 两档）。CI 与本地门禁**同源** —— 不另起一套命令，否则
+"CI 绿了"不代表"本地门禁也是绿的"。
+
+### pre-commit hook（可选）
+
+```bash
+git config core.hooksPath .githooks    # 启用一次即可
+```
+
+提交前自动跑测试 + 语法检查 + 覆盖率。紧急提交可 `SKIP_GATE=1 git commit ...` 跳过。
+
+---
+
 ## 🧪 测试
 
 ```bash

@@ -113,6 +113,37 @@ SECRET_PATTERNS = [
 ]
 
 
+def _scan_tracked_files() -> str:
+    """整仓扫描：把 git 跟踪的文件内容拼成一个大字符串交给正则。
+
+    - 排除 `tests/`：那里**故意**放着假凭据（`sk-cp-testkey…` 等）来验证脱敏逻辑。
+    - 排除二进制与非文本文件。
+    - 只读 git 跟踪的文件 → 未入库的临时产物不会被扫（也扫不到）。
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO, capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+    ).stdout
+    chunks: list[str] = []
+    for raw in out.split("\0"):
+        if not raw:
+            continue
+        rel = raw.replace("\\", "/")
+        if rel.startswith("tests/"):
+            continue
+        path = REPO / rel
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "\x00" in text:
+            continue                      # 二进制
+        chunks.append(f"\n--- {rel} ---\n{text}")
+    return "".join(chunks)
+
+
 def step_secret_scan(_args) -> bool:
     header("Step 2: secret scan（防凭据泄漏）")
     rc, _, _ = run(["git", "diff", "--staged", "--no-color"], timeout=30)
@@ -126,18 +157,28 @@ def step_secret_scan(_args) -> bool:
             cwd=REPO, capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         ).stdout
 
+    # V3.9：diff 为空（CI 上工作树是干净的）→ 退化为**整仓扫描**，
+    # 否则 CI 的 secret scan 永远是空转（"看起来在扫，其实什么都没扫"）。
+    # tests/ 排除：那里故意放着假凭据来验证脱敏逻辑（sk-cp-testkey… 等）。
+    scope = "diff"
+    if not diff.strip():
+        diff = _scan_tracked_files()
+        scope = "整仓"
+
     issues = []
     for pattern, label in SECRET_PATTERNS:
         for m in re.finditer(pattern, diff):
-            issues.append(f"{label}: {m.group()[:30]}...")
+            # R4 / Floor Rule 4：**绝不能把凭据本身打进日志**。
+            # 旧实现打的是 `m.group()[:30]` —— 那就是密钥的前 30 个字符！
+            issues.append(f"{label}: ***REDACTED***")
 
     if issues:
-        print(f"❌ Secret scan FAILED:")
+        print(f"❌ Secret scan FAILED（{scope}）:")
         for i in issues:
             print(f"  {i}")
         return False
 
-    print("✅ No secrets detected in diff")
+    print(f"✅ No secrets detected（{scope}）")
     return True
 
 

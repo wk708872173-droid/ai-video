@@ -397,3 +397,42 @@ def test_step_tests_uses_a_path_that_exists(monkeypatch):
         p = Path(arg)
         if p.suffix == ".py" or p.is_dir():
             assert p.exists(), f"pytest 参数 {arg!r} 不存在"
+
+
+# ---------- V3.9：secret scan 不得把凭据本身打进日志（Floor Rule 4） ----------
+
+def test_secret_scan_redacts_the_secret_value(monkeypatch, capsys):
+    """旧实现打的是 `m.group()[:30]` —— 那就是密钥的前 30 个字符。
+
+    Floor Rule 4：凭据在日志 / 报告里只能是 ***REDACTED***。
+    """
+    secret = "sk-cp-" + "A" * 40
+    fake = _FakeRun()
+    monkeypatch.setattr(auto_dev, "run", fake)
+    # 让 diff 里含一个"真格式"的假密钥
+    monkeypatch.setattr(
+        auto_dev.subprocess, "run",
+        lambda *a, **k: type("R", (), {"stdout": "diff " + secret + "\n"})(),
+    )
+    assert auto_dev.step_secret_scan(None) is False
+    err = capsys.readouterr().out
+    assert "***REDACTED***" in err
+    assert secret not in err, "secret scan 的输出里出现了凭据本身"
+
+
+def test_secret_scan_falls_back_to_whole_tree(monkeypatch):
+    """diff 为空（CI 干净工作树）→ 退化为整仓扫描，而不是空转。"""
+    assert hasattr(auto_dev, "_scan_tracked_files")
+    text = auto_dev._scan_tracked_files()
+    assert isinstance(text, str)
+    # tests/ 被排除（那里有故意的假凭据）
+    assert "--- tests/" not in text
+    # 但源码被扫到了
+    assert "--- sandbox/" in text or "--- scripts/" in text
+
+
+def test_secret_scan_whole_tree_excludes_tests_fixtures():
+    """整仓扫描不得被 tests/ 里的假凭据触发（否则 CI 永远红）。"""
+    text = auto_dev._scan_tracked_files()
+    import re
+    assert not re.search(r"sk-cp-[a-zA-Z0-9_-]{20,}", text), "tests/ 的假凭据漏进整仓扫描了"

@@ -1,0 +1,55 @@
+name: CI
+
+# V3.9 新增。此前本仓**没有任何 CI**（docs/ARCHITECTURE.md:153 一直挂着
+# "CI pre-commit hook 自动跑回归测试" 这条待办）—— 意味着本地门禁过了就以为安全，
+# 而门禁本身没人跑的时候，回归全靠人记。
+#
+# 跑什么：仓库**自己的**门禁 `scripts/auto_dev.py`（pytest + secret scan +
+# py_compile lint + coverage ≥ 80%）。不另起一套命令 —— 门禁与 CI 必须同源，
+# 否则 CI 绿了不代表本地门禁也是绿的（V3.9 的 D-030 就是"两套行为不一致"的实例）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: 门禁 (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject 声明 requires-python = ">=3.10"。
+        # 取 3.11 / 3.13：3.10 与 3.12/3.14 之间没有本仓特有的行为差异，
+        # 但要覆盖"最低可用版本附近 + 当前主流"两端。
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: 门禁（pytest + secret scan + lint + coverage ≥ 80%）
+        # --no-commit：CI 不该提交。auto_dev 的自动 commit 是给本地开发循环用的。
+        run: python scripts/auto_dev.py --no-commit
+
+      - name: 上传失败日志
+        if: failure()
+        run: |
+          ls -la logs/ 2>/dev/null || true
+          find logs -name "*.jsonl" -newer pyproject.toml 2>/dev/null | head -20 || true

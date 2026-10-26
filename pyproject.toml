@@ -29,7 +29,9 @@ local-video = [
     "diffusers>=0.25",
     "numpy>=1.24",
 ]
-dev = ["pytest>=7.0"]
+# V3.9 补 pytest-cov：门禁的覆盖率步骤（auto_dev.py:step_coverage_gate）
+# 用 --cov 扫描，缺它整仓覆盖率那步直接跑不起来 → CI 会因"解析失败"而红。
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
 [tool.setuptools]
 # 包实际位于 sandbox/ 下，非常规布局，需显式映射（README 记的

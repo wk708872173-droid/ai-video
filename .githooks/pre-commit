@@ -1,0 +1,46 @@
+#!/bin/sh
+# V3.9 pre-commit hook —— 提交前跑仓库自己的门禁。
+#
+# 启用（一次性）：
+#     git config core.hooksPath .githooks
+#
+# 为什么不默认启用：hook 会拖慢每次提交，且 Windows 上 sh 兼容性参差。
+# 故做成"装一次就生效"的形式，由开发者自己决定。
+#
+# 行为：
+#   - 只跑**测试 + 语法检查 + 覆盖率**三步（不含 secret scan —— 提交前的
+#     secret scan 由 auto_dev 的完整门禁负责，这里跑全量太慢）
+#   - 任一步失败 → 拒绝提交（退出码非 0）
+#   - 支持 SKIP_GATE=1 临时跳过（紧急提交时用）
+
+set -e
+
+if [ "$SKIP_GATE" = "1" ]; then
+    echo "[pre-commit] SKIP_GATE=1 → 跳过门禁"
+    exit 0
+fi
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+echo "[pre-commit] 跑测试..."
+python -m pytest tests -q --tb=line -p no:cacheprovider || {
+    echo "[pre-commit] ❌ 测试未通过 → 拒绝提交"
+    exit 1
+}
+
+echo "[pre-commit] 语法检查..."
+python -m py_compile $(find sandbox tests scripts -name "*.py" -not -path "*__pycache__*") || {
+    echo "[pre-commit] ❌ 语法检查未通过 → 拒绝提交"
+    exit 1
+}
+
+echo "[pre-commit] 覆盖率门禁..."
+python -m pytest tests --cov=sandbox/hailuo_video --cov-report=term -q --tb=no \
+    -p no:cacheprovider --ignore=tests/test_tts_engine.py || {
+    echo "[pre-commit] ❌ 覆盖率门禁未通过 → 拒绝提交"
+    exit 1
+}
+
+echo "[pre-commit] ✅ 通过"
+exit 0
