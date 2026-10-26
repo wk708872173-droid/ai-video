@@ -32,35 +32,35 @@ def test_is_image_configured_requires_key():
     assert ie.is_image_configured() is False
 
 
-def test_is_image_configured_requires_min_key_length():
-    os.environ["MINIMAX_API_KEY"] = "short"
+def test_is_image_configured_requires_min_key_length(monkeypatch):
+    monkeypatch.setenv('MINIMAX_API_KEY', "short")
     assert ie.is_image_configured() is False
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
     assert ie.is_image_configured() is True
 
 
-def test_configuration_warnings_short_key():
-    os.environ["MINIMAX_API_KEY"] = "abc"
+def test_configuration_warnings_short_key(monkeypatch):
+    monkeypatch.setenv('MINIMAX_API_KEY', "abc")
     warns = ie.configuration_warnings()
     assert any("长度" in w for w in warns)
 
 
-def test_configuration_warnings_bad_response_format():
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
-    os.environ["MINIMAX_IMAGE_RESPONSE_FORMAT"] = "xml"
+def test_configuration_warnings_bad_response_format(monkeypatch):
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
+    monkeypatch.setenv('MINIMAX_IMAGE_RESPONSE_FORMAT', "xml")
     warns = ie.configuration_warnings()
     assert any("response_format" in w.lower() for w in warns)
 
 
-def test_configuration_warnings_bad_aspect_ratio():
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
-    os.environ["MINIMAX_IMAGE_ASPECT_RATIO"] = "32:9"
+def test_configuration_warnings_bad_aspect_ratio(monkeypatch):
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
+    monkeypatch.setenv('MINIMAX_IMAGE_ASPECT_RATIO', "32:9")
     warns = ie.configuration_warnings()
     assert any("aspect_ratio" in w.lower() for w in warns)
 
 
-def test_configuration_warnings_clean():
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
+def test_configuration_warnings_clean(monkeypatch):
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
     warns = ie.configuration_warnings()
     assert warns == []
 
@@ -280,8 +280,8 @@ def test_generate_sends_correct_payload(monkeypatch):
         http_post=fake_post,
     )
     import os
-    os.environ["MINIMAX_IMAGE_ASPECT_RATIO"] = "4:3"
-    os.environ["MINIMAX_IMAGE_N"] = "2"
+    monkeypatch.setenv('MINIMAX_IMAGE_ASPECT_RATIO', "4:3")
+    monkeypatch.setenv('MINIMAX_IMAGE_N', "2")
     backend.generate("a cat")
 
     assert captured["url"] == "https://api.minimaxi.com/v1/image_generation"
@@ -344,8 +344,8 @@ def test_make_backend_mock():
     assert isinstance(backend, ie.MockImageBackend)
 
 
-def test_make_backend_minimax():
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
+def test_make_backend_minimax(monkeypatch):
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
     backend = ie.make_backend("minimax")
     assert isinstance(backend, ie.MiniMaxImageBackend)
 

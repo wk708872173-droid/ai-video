@@ -6,6 +6,8 @@
   - 镜头描述面向"AI 生图 / 生视频"的可视化关键词
 """
 
+from typing import Any
+
 
 # ---------- 1. 小说 → 漫剧剧本 ----------
 
@@ -23,6 +25,7 @@ NOVEL_TO_SCRIPT_PROMPT = """你是一位资深的漫剧编剧。请把用户提�
 ```json
 {{
   "title": "剧本标题（10 字以内）",
+  "style_anchor": "全局画风锚定（20-60 字，具体视觉参考：器材 + 镜头 + 光线 + 色调）",
   "scenes": [
     {{
       "id": 1,
@@ -30,11 +33,19 @@ NOVEL_TO_SCRIPT_PROMPT = """你是一位资深的漫剧编剧。请把用户提�
       "location": "地点（中文，10 字以内）",
       "characters": ["角色 A", "角色 B"],
       "summary": "本场戏摘要（50-100 字）",
-      "dialogue": "关键台词（如有，0-2 句）"
+      "dialogue": "关键台词（如有，0-2 句）",
+      "atmosphere": "本场氛围（光线/天气/基调，20 字以内）",
+      "key_elements": ["镜头里看得见的元素 1", "元素 2", "元素 3"]
     }}
   ]
 }}
 ```
+
+`atmosphere` / `key_elements` 用于生成场景 reference 图（V2.5 scene sheet）——
+只写镜头里**看得见**的东西，不要写抽象情绪。
+
+`style_anchor` 是**全局画风锚定**：一整部片子共用的视觉基线，会被前置到每一镜的
+出图 prompt 最前，缺了它画面就容易漂成"一眼 AI"。
 
 小说片段：
 {novel}
@@ -244,6 +255,20 @@ def _build_storyboard_prompt_v2() -> str:
 STORYBOARD_PROMPT_V2 = _build_storyboard_prompt_v2()
 
 
+def _safe_fill(template: str, **kwargs: Any) -> str:
+    """安全填充占位符：逐个 replace，**不调 str.format**。
+
+    为什么不用 .format()：模板里若出现任何未登记的 `{`（例如将来把 JSON 示例
+    写进模板），.format 会直接抛 KeyError/IndexError；而 LLM 产出的 JSON 里
+    也有大量 `{`（虽然值不会被二次扫描）。replace 方式只动我们登记的键，
+    永远不会因为模板/内容里的花括号炸掉。
+    """
+    out = template
+    for key, value in kwargs.items():
+        out = out.replace("{" + key + "}", str(value))
+    return out
+
+
 def render_storyboard_prompt(
     *,
     n_shots: int = 30,
@@ -257,6 +282,11 @@ def render_storyboard_prompt(
     include_hints=False 用于单测 / 简化版本（不含三拍 / 70/30 / 白名单提示）。
     director_mode=False（默认）→ 渲染 V1，向后兼容现有 18 个 test_prompts.py 测试。
     director_mode=True → 渲染 V2（注入 director guidance + 扩展 schema）。
+
+    V3.8 W2：本函数此前**从未被生产代码调用** —— `script_engine.script_to_storyboard`
+    直接用 `STORYBOARD_PROMPT` + str.replace，于是 `{three_beat_hint}` /
+    `{camera_motion_whitelist}` / `{motion_complexity_whitelist}` / `{prompt_70_30}`
+    以**字面花括号**进了 LLM prompt（缺陷 4）。现已接线。
     """
     if include_hints:
         three_beat_hint = THREE_BEAT_STRUCTURE_HINT.strip()
@@ -267,7 +297,13 @@ def render_storyboard_prompt(
             "motion_complexity 白名单（仅 3 种）：" +
             " / ".join(MOTION_COMPLEXITY_WHITELIST)
         )
-        prompt_70_30 = "70/30 提示法 + subject_action 格式要求：\n" + THREE_BEAT_STRUCTURE_HINT.strip()
+        prompt_70_30 = (
+            "70/30 提示法：70% 篇幅写**画面主体**（人物外观 + 动作 + 场景 + 构图），"
+            "30% 篇幅写**影像风格**（画风 / 光线 / 焦段 / 氛围）。两段都要具体可视化，"
+            "禁止只写抽象形容词（\"很温馨\" ❌ → \"暖金色侧光勾出绒毛轮廓\" ✓）。\n"
+            "subject_action 格式要求：一句**可拍摄**的动作短语（动词开头、含主体、"
+            "不含情绪词），例：\"小狗抬爪扒门\" / \"农夫放下锄头望向远山\"。\n"
+        )
     else:
         three_beat_hint = ""
         camera_motion_whitelist = ""
@@ -275,7 +311,8 @@ def render_storyboard_prompt(
         prompt_70_30 = ""
 
     template = STORYBOARD_PROMPT_V2 if director_mode else STORYBOARD_PROMPT
-    return template.format(
+    return _safe_fill(
+        template,
         n_shots=n_shots,
         three_beat_hint=three_beat_hint,
         camera_motion_whitelist=camera_motion_whitelist,

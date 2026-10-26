@@ -1,0 +1,378 @@
+{
+  "_doc": "本地视频 (CogVideoX / V2-Local) 项目知识索引。完整 ai-os 索引在 ai_agents_dev_tool/knowledge/index.json。",
+  "decisions": [
+    {
+      "id": "D-009",
+      "topic": "sandbox-side-project",
+      "keywords": [
+        "sandbox",
+        "旁路",
+        "side-project",
+        "新客户",
+        "好玩",
+        "hailuo",
+        "local-video"
+      ],
+      "importance": 4,
+      "note": "新项目放 sandbox/<name>/，自带 prd.md + runtime/，不入主 TASK_QUEUE.json，不污染 src/agentorg/、src/<客户>/"
+    },
+    {
+      "id": "D-010",
+      "topic": "api-unverified-hard-fail",
+      "keywords": [
+        "api",
+        "endpoint",
+        "未核实",
+        "misconfigured",
+        "禁止编造",
+        "字段",
+        "hailuo"
+      ],
+      "importance": 5,
+      "note": "新 API 集成前无公开文档：端点必须 env 必填，缺则 source=misconfigured 硬失败，禁止猜 base URL 跑通假装 done"
+    },
+    {
+      "id": "D-011",
+      "topic": "local-inference-fallback",
+      "keywords": [
+        "MiniMax",
+        "Plus",
+        "无视频api",
+        "本地推理",
+        "diffusers",
+        "CogVideoX",
+        "V2-Local"
+      ],
+      "importance": 5,
+      "note": "MiniMax Plus token plan 不带视频 API 额度；切本地 diffusers CogVideoX 推理替代 HTTP 客户端。零外部网络，CPU 可跑（慢）。删除 hailuo_client.py + HAILUO_* env var，改 LOCAL_VIDEO_*"
+    },
+    {
+      "id": "D-012",
+      "topic": "script-engine-llm-backend",
+      "keywords": [
+        "script_engine",
+        "novel",
+        "分镜",
+        "MiniMax",
+        "chat",
+        "api",
+        "LLM",
+        "V2.1",
+        "MockBackend"
+      ],
+      "importance": 5,
+      "note": "novel → script → characters → storyboard 三步 LLM 辅助；默认 MiniMaxChatBackend（D-010 模式：必填 Key + 缺失硬失败 + MockBackend 单测）。端点 api.minimaxi.com/v1/chat/completions + MiniMax-M3 [UNVERIFIED]，首次烟测必须由用户做。base URL 修正为 api.minimaxi.com（D-013）"
+    },
+    {
+      "id": "D-013",
+      "topic": "minimax-image-api-direct",
+      "keywords": [
+        "image_engine",
+        "文生图",
+        "MiniMax",
+        "image-01",
+        "image_generation",
+        "api.minimaxi.com",
+        "V2.2",
+        "MockImageBackend"
+      ],
+      "importance": 5,
+      "note": "文生图走 MiniMax image API（不复用 fal.ai）：CN 域 api.minimaxi.com/v1/image_generation + image-01，response_format base64/url。端点由用户核实（D-010 验证完成）。复用 MINIMAX_API_KEY + MINIMAX_BASE_URL。R1 [UNVERIFIED] 响应 schema 嵌套层级首次烟测确认"
+    },
+    {
+      "id": "D-014",
+      "topic": "edge-tts-zero-cost",
+      "keywords": [
+        "tts_engine",
+        "TTS",
+        "edge-tts",
+        "配音",
+        "Microsoft",
+        "V2.3",
+        "MockTTSBackend"
+      ],
+      "importance": 5,
+      "note": "TTS 用 edge-tts pip 包（7.2.8）：零 Key 零账号零成本；Microsoft Edge read-aloud API；中文 voices 14 种；CPU 友好。闭源 web 服务，端点不固定（D-010 模式：单测 mock + 烟测 + 不固化 schema）。不破坏 D-011 视频零网络底线"
+    },
+    {
+      "id": "D-016",
+      "topic": "ken-burns-mvp",
+      "keywords": [
+        "video_engine",
+        "Ken Burns",
+        "ffmpeg",
+        "zoompan",
+        "pipeline",
+        "MVP",
+        "V2.5",
+        "漫剧"
+      ],
+      "importance": 5,
+      "note": "MVP 走 Ken Burns 视频：每镜头只生 1 张关键帧图 → ffmpeg zoompan 推拉镜头 → 配音 → 字幕 → 拼接。CPU 上 5s 视频 ≈ 5s 渲染（非真 AI 视频生成）。已交付 5 个 sample mp4 于 ai_video/sample/。不破坏 D-011 视频零网络底线"
+    },
+    {
+      "id": "D-017",
+      "topic": "gemini-nano-banana-image-backend",
+      "keywords": [
+        "image_engine",
+        "Gemini",
+        "Nano Banana",
+        "gemini-2.5-flash-image",
+        "i2i",
+        "inlineData",
+        "reference",
+        "本地路径",
+        "x-goog-api-key",
+        "character consistency"
+      ],
+      "importance": 5,
+      "note": "文生图增接 Google Nano Banana，--image-backend gemini 与 minimax 平级。核心是 reference 契约从「URL 专用」扩为「URL 或本地路径」（ImageBackend.supports_local_refs），保住 RMAP 角色一致性；MiniMax 收 URL、Gemini inlineData 收裸字节。Gemini 无 url 模式（永远 base64）/ 无 n 参数（n>1 顺序循环）/ 比例支持 10 个。.url.txt 必须继续写空串否则 prep 重复计费。响应是 camelCase inlineData（非 Python SDK 的 inline_data）。[UNVERIFIED] 待用户真机烟测"
+    },
+    {
+      "id": "D-018",
+      "topic": "cli-mock-vs-unit-mock-split",
+      "keywords": [
+        "MockBackend",
+        "CliMockBackend",
+        "cli",
+        "mock",
+        "script_engine",
+        "AssertionError",
+        "离线冒烟"
+      ],
+      "importance": 4,
+      "note": "MockBackend 的「未匹配即抛」是单测依赖的设计，加默认回退会让忘注册响应的测试静默变绿。故另立 CliMockBackend（内置 canned 三角色 JSON）供 CLI --backend mock，MockBackend 一行不动。镜头数从 prompt 正则读回（_parse_shots_payload 要求精确相等）。连带：cli.py 报错文案曾推荐一条走不通的路，已修"
+    },
+    {
+      "id": "D-019",
+      "topic": "pyproject-editable-install",
+      "keywords": [
+        "pyproject",
+        "packaging",
+        "pip install -e",
+        "sandbox",
+        "package-dir",
+        "依赖声明",
+        "README"
+      ],
+      "importance": 4,
+      "note": "补 pyproject.toml 走可编辑安装：包在 sandbox/ 下必须显式 package-dir 映射，否则 README 的 python -m hailuo_video 从仓库根报 No module named。顺带补上项目首个依赖声明（依赖清单来自真实 import 统计；requests 不是依赖）。坑：只写 dynamic=[\"version\"] 不够，须配 [tool.setuptools.dynamic]，否则 wheel 静默打 0.0.0"
+    },
+    {
+      "id": "D-020",
+      "topic": "auto-dev-utf8-stdout",
+      "keywords": [
+        "auto_dev",
+        "windows",
+        "cp932",
+        "UnicodeEncodeError",
+        "utf-8",
+        "reconfigure",
+        "门禁",
+        "退出码",
+        "L-009"
+      ],
+      "importance": 5,
+      "note": "门禁脚本入口重配 stdout/stderr 为 utf-8 + errors=replace。cp932 下 emoji 触发 UnicodeEncodeError，且兜底异常处理器自己也抛，使门禁交出不可信退出码。errors=replace 是关键：保证门禁永不因编码丢失 rc。本条即兑现 L-009（教训早已记录，auto_dev 一直没落实）"
+    },
+    {
+      "id": "D-021",
+      "topic": "character-bible-global-reuse",
+      "keywords": [
+        "character",
+        "bible",
+        "global",
+        "reuse",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 5,
+      "note": "全局角色圣经：角色参考图按视觉身份（appearance+palette+style_anchor 哈希，不含名字）跨项目复用。修角色跨天漂移 + reference URL 过期静默失效 + 中文色词歧义（'小黄'→橘猫）。依据 arXiv:2512.16954 视觉锚定是硬需求、2503.10391 不靠关键词映射。全局库在 ADR-007 项目 namespace 之外。"
+    },
+    {
+      "id": "D-022",
+      "topic": "director-static-dynamic-decoupling",
+      "keywords": [
+        "director",
+        "static",
+        "dynamic",
+        "decoupling",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 5,
+      "note": "导演解耦：12 个 director 字段拆成 static_visual（→image prompt）与 dynamic_narrative（→motion prompt），不再只服务人工审稿。依据 arXiv:2606.24107 DramaDirector、2509.26555 Stable Cinemetrics。顺带修 prompt 占位符字面泄漏（render_storyboard_prompt 从未被调用）与 camera_motion 从未进视频模型。"
+    },
+    {
+      "id": "D-023",
+      "topic": "cross-shot-continuity-gate",
+      "keywords": [
+        "cross",
+        "shot",
+        "continuity",
+        "gate",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 4,
+      "note": "跨镜连续性门禁 + 拼接层 fps 归一化：单镜 SSIM gate 管不到切点之后，实测跨镜色差 0.700 vs 理想 0.95。新增 continuity.py（阈值 0.90，维度对齐 LoCoT2V-Eval/PersonaShot），叠化前统一 fps=24（Hailuo 8fps vs Ken Burns 24fps 混合会让帧突跳跨段扩散）。"
+    },
+    {
+      "id": "D-024",
+      "topic": "motion-params-knowledge-store",
+      "keywords": [
+        "motion",
+        "params",
+        "knowledge",
+        "store",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 4,
+      "note": "运动参数知识库（REQ-406）+ 检索增强：knowledge/motion_params.json 落地（8 条种子来自实测复盘 + relation graph），检索用纯 stdlib 关键词 + 关系边（CJK 字符二元组），不引入向量库。依据 arXiv:2504.11739 RAPO、2608.17468 SAGE。写库默认关闭，避免污染人工维护的种子数据。"
+    },
+    {
+      "id": "D-025",
+      "topic": "negative-prompt-capability-declared",
+      "keywords": [
+        "negative",
+        "prompt",
+        "capability",
+        "declared",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 4,
+      "note": "负提示词：此前全仓零支持。新增 negative_prompt.py（PROHIBITED_CONTENT 唯一 SSOT）+ 后端能力声明 supports_native_negative_prompt（默认 False → 内联进 prompt，绝不发未确认字段以免 4xx 且已计费）。依据 arXiv:2610.15098 TIDE 单次调用出正/负提示词，适配 Hailuo 每日 3 quota 的成本约束。"
+    },
+    {
+      "id": "D-026",
+      "topic": "vlm-review-interface-only",
+      "keywords": [
+        "vlm",
+        "review",
+        "interface",
+        "only",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 3,
+      "note": "VLM 评审只建接口不接真 API：新增 vlm_review.py（评审器 ABC / Mock 零网络 / Gemini 真后端带 http_post 注入点 / 5 维 / 可解释报告）+ CLI review 子命令。真 API 需 --enable-real + GEMINI_API_KEY + GEMINI_VLM_MODEL 三者齐备，缺一显式报错（不静默退回 mock）。依据 arXiv:2603.12310 VQQA、2509.22799 VideoScore2。"
+    },
+    {
+      "id": "D-027",
+      "topic": "p0-silent-failure-fixes",
+      "keywords": [
+        "p0",
+        "silent",
+        "failure",
+        "fixes",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 5,
+      "note": "P0 止血批：4 个静默失败 —— 9:16 在 V3 路径不可达（4 处硬编码叠加）、motion static 静默降级仍报 OK、registry 落盘 except OSError pass、多镜 storyboard 全部镜头共用最后一张图（artifact_id 不按 shot 隔离）。原则：让失败可见而不是让主流程崩。"
+    },
+    {
+      "id": "D-028",
+      "topic": "v38-literature-mapping-index",
+      "keywords": [
+        "v38",
+        "literature",
+        "mapping",
+        "index",
+        "V3.8",
+        "文献驱动"
+      ],
+      "importance": 4,
+      "note": "V3.8 六条工作流的文献映射总览（16 组 arXiv 检索 → file:line 级缺陷）。方法论教训：'实现已存在但从未接线'是一类独立缺陷（prompts_director 的 parse/apply 与 render_storyboard_prompt 都有单测但生产零调用），检索文献前应先做可达性审计。"
+    }
+  ],
+  "lessons": [
+    {
+      "id": "L-008",
+      "topic": "api-unverified",
+      "keywords": [
+        "api",
+        "未核实",
+        "猜端点",
+        "misconfigured",
+        "海螺",
+        "tokenplan",
+        "env 必填"
+      ],
+      "importance": 5,
+      "note": "API 未公开文档时禁止猜 base URL 假装 done；端点必须 env 必填，缺即硬失败；单测 mock 验证 I/O 契约"
+    },
+    {
+      "id": "L-009",
+      "topic": "windows-cjk-encoding",
+      "keywords": [
+        "windows",
+        "cp932",
+        "cp936",
+        "cjk",
+        "utf-8",
+        "argparse",
+        "help",
+        "console",
+        "shim"
+      ],
+      "importance": 4,
+      "note": "Windows 控制台 cp932/cp936 编码下 CJK help 文本触发 UnicodeEncodeError；pytest capsys 测不到。入口处必须 reconfigure stdout/stderr 为 UTF-8。CLI 上线前必跑一次 --help 烟测"
+    },
+    {
+      "id": "L-010",
+      "topic": "env-example-real-key-leak",
+      "keywords": [
+        "env.example",
+        "真实 key",
+        "redact",
+        "rule-4",
+        "secret-leak"
+      ],
+      "importance": 5,
+      "note": ".env.example 严禁含真实 key（仅占位）；发现泄漏必须 redact 为 ***REDACTED*** 并提示源仓同步修复。本轮 V2-Local 在 ai_video/.env.example 已修复；源 ai_agents_dev_tool/.env.example 待用户处理"
+    },
+    {
+      "id": "L-011",
+      "topic": "unwired-implementation",
+      "keywords": [
+        "unwired",
+        "implementation",
+        "V3.8",
+        "审计"
+      ],
+      "importance": 5,
+      "note": "「实现已存在但从未接线」是一类独立缺陷：解析器/渲染器有单测但生产零调用，缺陷不产生任何报错。修：接进主链路 + 断言落在链路产物上。排查'功能没生效'先查谁调用它。"
+    },
+    {
+      "id": "L-012",
+      "topic": "hardcoded-default-masks-upstream",
+      "keywords": [
+        "hardcoded",
+        "default",
+        "masks",
+        "upstream",
+        "V3.8",
+        "审计"
+      ],
+      "importance": 5,
+      "note": "硬编码默认值会逐层遮蔽上游配置：多层合理默认值 + or 短路（truthy 默认值）→ 上游 env 永远传不下去。修：默认值用 None 表示'未指定'，解析优先级显式化到唯一一处。"
+    },
+    {
+      "id": "L-013",
+      "topic": "silent-degradation-needs-trace",
+      "keywords": [
+        "silent",
+        "degradation",
+        "needs",
+        "trace",
+        "V3.8",
+        "审计"
+      ],
+      "importance": 5,
+      "note": "静默降级要留痕：'看起来像成功'是最大的坑。except: pass / 0 bytes 但报 OK / 过期 URL 静默使用 —— R4 的正确理解不是'不要抛异常'，而是'不要让调用方误以为成功'。降级信息必须进返回值或日志。"
+    }
+  ]
+}

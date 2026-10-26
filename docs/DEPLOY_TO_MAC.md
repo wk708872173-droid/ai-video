@@ -107,7 +107,7 @@ bash setup_on_mac.sh
 [4/5] 装 Python 依赖... ✓ 依赖已装
 [5/5] 跑 pytest 验证（应 660+ passed）...
 ...
-660 passed, 12 skipped in X.XXs
+1209 passed, 12 skipped in X.XXs
 ```
 
 ---
@@ -142,7 +142,7 @@ code .env
 ```bash
 # 1) 测试全绿
 python -m pytest tests/ -q --ignore=tests/test_tts_engine.py
-# 期望：660 passed, 12 skipped
+# 期望：1209 passed, 12 skipped
 
 # 2) V3.5 隔离测试专项
 python -m pytest tests/test_v35_isolation.py -v

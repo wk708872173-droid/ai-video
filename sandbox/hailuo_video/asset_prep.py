@@ -20,9 +20,14 @@
       └── ...
 
 跳过缓存：删除对应 .jpg 即重新生成（--force 全量重生成）。
+
+关于 .url.txt：Gemini（Nano Banana）无 url 响应模式，缓存时写入**空串**。
+文件仍必须存在——`has_cached_*` 系列要求 .jpg 与 .url.txt 同时存在才算缓存命中，
+不写会导致每次 prep 重复计费。
 """
 from __future__ import annotations
 
+import base64
 import time
 import urllib.error
 import urllib.request
@@ -31,10 +36,54 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hailuo_video import image_engine as ie
+from hailuo_video.character_bible import (
+    GlobalCharacterStore,
+    check_name_ambiguity,
+    compute_character_key,
+    is_reference_fresh,
+)
 from hailuo_video.script_engine import Character, SceneSpec, Storyboard
 
 
 DEFAULT_ASSETS_DIR = Path("./assets")  # 相对 cwd；CLI 可改
+
+# V3.8 W1：全局角色圣经（跨项目共享）。可用 env CHARACTER_BIBLE_DISABLE=1 关掉，
+# 退回"纯项目隔离"行为。默认开启 —— 它是唯一能跨天/跨项目复用角色参考图的机制。
+def _bible_enabled() -> bool:
+    import os
+    return os.environ.get("CHARACTER_BIBLE_DISABLE", "").strip() not in ("1", "true", "True", "yes")
+
+
+def _make_bible() -> GlobalCharacterStore | None:
+    """建全局库句柄；被 env 关掉时返回 None（全部走项目内 cache）。"""
+    return GlobalCharacterStore() if _bible_enabled() else None
+
+
+# ---------- 生成结果取字节 ----------
+
+def fetch_bytes(result: ie.ImageResult) -> bytes:
+    """取一张生成结果的字节：URL 模式下载，base64 模式直接解码。
+
+    替代 4 处手写的 `r.image_url[0]` + `urllib.request.urlopen`，让只支持
+    base64 的 provider（Gemini）无需改调用点。失败统一抛 ie.ImageError（R4：不静默降级）。
+    """
+    if result.bytes:
+        return result.bytes
+    if result.image_base64:
+        try:
+            return base64.b64decode(result.image_base64[0], validate=False)
+        except Exception as exc:
+            raise ie.ImageError(f"base64 解码失败：{exc}") from exc
+    if result.image_url:
+        url = result.image_url[0]
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                return resp.read()
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise ie.ImageError(f"下载 url 失败：{exc}") from exc
+    raise ie.ImageError(
+        f"ImageResult 既无 bytes 也无 image_base64/image_url（mime={result.mime_type}）"
+    )
 
 
 # ---------- Prompt 模板 ----------
@@ -295,10 +344,16 @@ def _generate_one_angle(
     assets_dir: Path,
     force_regenerate: bool,
     log: Callable[[str], None],
+    *,
+    character_key: str = "",
+    bible: GlobalCharacterStore | None = None,
 ) -> AssetResult:
     img_path = character_angle_path(name, angle, assets_dir)
     url_path = character_angle_url_path(name, angle, assets_dir)
 
+    # 优先级：**项目内 cache > 全局角色圣经 > 重新生成**。
+    # 项目内 cache 是"这个项目已经准备好的资产"，是权威来源；
+    # 全局圣经只在项目内没有该资产时兜底（跨项目/跨天复用）。
     if not force_regenerate and has_cached_character_angle(name, angle, assets_dir):
         cached_url = url_path.read_text(encoding="utf-8").strip()
         log(f"[asset-prep] cache hit: {name}/{angle}")
@@ -309,6 +364,32 @@ def _generate_one_angle(
             source="cached",
             extra={"path": str(img_path), "angle": angle},
         )
+
+    # V3.8 W1：全局角色圣经兜底（跨项目复用 → 0 次 API 调用）。
+    # 依据 arXiv:2512.16954：去掉视觉锚定后角色一致性从 7.99 崩到 0.55。
+    if bible is not None and character_key and not force_regenerate:
+        entry = bible.read_angle(character_key, angle)
+        if entry is not None:
+            if entry.is_fresh():
+                if bible.copy_angle_into(character_key, angle, img_path, url_path):
+                    log(f"[asset-prep] bible hit: {name}/{angle} (key={character_key})")
+                    return AssetResult(
+                        name=f"{name}/{angle}",
+                        image_path=str(img_path),
+                        url=entry.url,
+                        url_expires_at=entry.expires_at,
+                        source="cached",
+                        extra={"path": str(img_path), "angle": angle,
+                               "bible_key": character_key},
+                    )
+            else:
+                # R4：过期 URL **不得静默复用** —— 旧行为正是这样，导致跨天跑时
+                # 角色一致性悄悄失效（sample/story_arc_xiaohei_solo/README.md:237-241）。
+                # 这里明确告警并继续走生成路径，让代价可见。
+                log(
+                    f"[asset-prep] bible stale（reference 已过期，不复用）: {name}/{angle} "
+                    f"(key={character_key}) → 重新生成"
+                )
 
     started = time.monotonic()
     try:
@@ -329,36 +410,36 @@ def _generate_one_angle(
     elapsed = time.monotonic() - started
 
     r = results[0]
-    if not r.image_url:
-        return AssetResult(
-            name=f"{name}/{angle}",
-            image_path=str(img_path),
-            source="error",
-            error="response_format=url 但未拿到 image_url",
-            duration_seconds=elapsed,
-            extra={"angle": angle},
-        )
-
     try:
-        data = urllib.request.urlopen(r.image_url[0], timeout=30).read()
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        data = fetch_bytes(r)
+    except ie.ImageError as exc:
         return AssetResult(
             name=f"{name}/{angle}",
             image_path=str(img_path),
             source="error",
-            error=f"下载 url 失败：{exc}",
+            error=str(exc),
             duration_seconds=elapsed,
             extra={"angle": angle},
         )
 
     img_path.write_bytes(data)
-    url_path.write_text(r.image_url[0], encoding="utf-8")
+    # Gemini 无 url 模式 → 写空串。文件仍必须存在，has_cached_character_angle
+    # 要求 .jpg 与 .url.txt 同时存在，否则每次 prep 都会重复计费。
+    ref_url = r.image_url[0] if r.image_url else ""
+    url_path.write_text(ref_url, encoding="utf-8")
+    expires_at = _extract_url_expiry(ref_url) if ref_url else ""
+    # V3.8 W1：过期时间落盘（cache hit 路径也要能判新鲜度 —— 旧实现只在
+    # AssetResult 里带过，缓存命中就丢了 → 跨天跑静默用过期 URL）。
+    _expiry_sidecar(img_path).write_text(expires_at, encoding="utf-8")
+    # V3.8 W1：写回全局库（下次别的项目 / 明天直接命中 → 0 API 调用）。
+    if bible is not None and character_key:
+        bible.write_angle(character_key, angle, img_path, ref_url, expires_at)
     log(f"[asset-prep] generated: {name}/{angle} → {img_path} ({len(data)} bytes)")
     return AssetResult(
         name=f"{name}/{angle}",
         image_path=str(img_path),
-        url=r.image_url[0],
-        url_expires_at=_extract_url_expiry(r.image_url[0]),
+        url=ref_url,
+        url_expires_at=expires_at,
         source="ok",
         duration_seconds=elapsed,
         extra={"bytes": len(data), "angle": angle},
@@ -389,6 +470,14 @@ def generate_character_sheet(
     out: dict[str, AssetResult] = {}
     log(f"[asset-prep] preparing {len(angles)} angle(s) for {character.name}: {angles}")
 
+    # V3.8 W1：全局角色圣经身份键 + 名字歧义守卫（纯代码，不调 LLM）。
+    bible = _make_bible()
+    character_key = compute_character_key(character, style_anchor) if bible else ""
+    for warn in check_name_ambiguity(character):
+        log(f"[asset-prep] [WARN] {warn}")
+    if character_key:
+        log(f"[asset-prep] character bible key = {character_key}（{character.name}）")
+
     for angle in angles:
         prompt_template = CHARACTER_ANGLE_PROMPTS.get(angle)
         if not prompt_template:
@@ -407,7 +496,22 @@ def generate_character_sheet(
         out[angle] = _generate_one_angle(
             character.name, angle, prompt, image_backend,
             assets_dir, force_regenerate, log,
+            character_key=character_key, bible=bible,
         )
+
+    # 写身份记录（首次生成后）
+    if bible is not None and character_key:
+        from hailuo_video.character_bible import CharacterIdentity
+        import datetime
+        if bible.load_identity(character_key) is None:
+            bible.save_identity(CharacterIdentity(
+                key=character_key,
+                name=character.name,
+                appearance=character.appearance or "",
+                color_palette=tuple(character.color_palette or ()),
+                style_anchor=style_anchor or "",
+                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            ))
 
     return out
 
@@ -467,35 +571,29 @@ def generate_scene_sheet(
     elapsed = time.monotonic() - started
 
     r = results[0]
-    if not r.image_url:
-        return AssetResult(
-            name=f"scene_{scene.id}",
-            image_path=str(img_path),
-            source="error",
-            error="response_format=url 但未拿到 image_url",
-            duration_seconds=elapsed,
-        )
-
     try:
-        data = urllib.request.urlopen(r.image_url[0], timeout=30).read()
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        data = fetch_bytes(r)
+    except ie.ImageError as exc:
         return AssetResult(
             name=f"scene_{scene.id}",
             image_path=str(img_path),
             source="error",
-            error=f"下载 url 失败：{exc}",
+            error=str(exc),
             duration_seconds=elapsed,
         )
 
     img_path.write_bytes(data)
-    url_path.write_text(r.image_url[0], encoding="utf-8")
+    ref_url = r.image_url[0] if r.image_url else ""  # Gemini 无 url 模式 → 空串（仍要写文件）
+    url_path.write_text(ref_url, encoding="utf-8")
+    expires_at = _extract_url_expiry(ref_url) if ref_url else ""
+    _expiry_sidecar(img_path).write_text(expires_at, encoding="utf-8")
     log(f"[asset-prep] generated: scene_{scene.id} → {img_path} ({len(data)} bytes)")
 
     return AssetResult(
         name=f"scene_{scene.id}",
         image_path=str(img_path),
-        url=r.image_url[0],
-        url_expires_at=_extract_url_expiry(r.image_url[0]),
+        url=ref_url,
+        url_expires_at=expires_at,
         source="ok",
         duration_seconds=elapsed,
         extra={"bytes": len(data), "scene_id": scene.id},
@@ -631,6 +729,10 @@ def generate_character_expressions(
     out: dict[str, AssetResult] = {}
     log(f"[asset-prep] preparing {len(expressions)} expression(s) for {character.name}: {expressions}")
 
+    # V3.8 W1：全局角色圣经身份键（表情表与角度表共用同一个角色身份）。
+    bible = _make_bible()
+    character_key = compute_character_key(character, style_anchor) if bible else ""
+
     for expr in expressions:
         prompt_template = EXPRESSION_PROMPTS.get(expr)
         if not prompt_template:
@@ -649,6 +751,7 @@ def generate_character_expressions(
         out[expr] = _generate_expression_one(
             character.name, expr, prompt, image_backend,
             assets_dir, force_regenerate, log,
+            character_key=character_key, bible=bible,
         )
     return out
 
@@ -661,10 +764,14 @@ def _generate_expression_one(
     assets_dir: Path,
     force_regenerate: bool,
     log: Callable[[str], None],
+    *,
+    character_key: str = "",
+    bible: GlobalCharacterStore | None = None,
 ) -> AssetResult:
     img_path = character_expression_path(name, expression, assets_dir)
     url_path = character_expression_url_path(name, expression, assets_dir)
 
+    # 优先级：项目内 cache > 全局角色圣经 > 重新生成（与角度表一致）。
     if not force_regenerate and has_cached_character_expression(name, expression, assets_dir):
         cached_url = url_path.read_text(encoding="utf-8").strip()
         log(f"[asset-prep] cache hit: {name}/expression_{expression}")
@@ -675,6 +782,28 @@ def _generate_expression_one(
             source="cached",
             extra={"path": str(img_path), "expression": expression},
         )
+
+    # V3.8 W1：全局角色圣经兜底（表情表同样跨项目复用）。
+    if bible is not None and character_key and not force_regenerate:
+        entry = bible.read_angle(character_key, f"expression_{expression}")
+        if entry is not None:
+            if entry.is_fresh():
+                if bible.copy_angle_into(character_key, f"expression_{expression}", img_path, url_path):
+                    log(f"[asset-prep] bible hit: {name}/expression_{expression} (key={character_key})")
+                    return AssetResult(
+                        name=f"{name}/expression_{expression}",
+                        image_path=str(img_path),
+                        url=entry.url,
+                        url_expires_at=entry.expires_at,
+                        source="cached",
+                        extra={"path": str(img_path), "expression": expression,
+                               "bible_key": character_key},
+                    )
+            else:
+                log(
+                    f"[asset-prep] bible stale（reference 已过期，不复用）: {name}/expression_{expression} "
+                    f"(key={character_key}) → 重新生成"
+                )
 
     started = time.monotonic()
     try:
@@ -695,36 +824,32 @@ def _generate_expression_one(
     elapsed = time.monotonic() - started
 
     r = results[0]
-    if not r.image_url:
-        return AssetResult(
-            name=f"{name}/expression_{expression}",
-            image_path=str(img_path),
-            source="error",
-            error="response_format=url 但未拿到 image_url",
-            duration_seconds=elapsed,
-            extra={"expression": expression},
-        )
-
     try:
-        data = urllib.request.urlopen(r.image_url[0], timeout=30).read()
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        data = fetch_bytes(r)
+    except ie.ImageError as exc:
         return AssetResult(
             name=f"{name}/expression_{expression}",
             image_path=str(img_path),
             source="error",
-            error=f"下载 url 失败：{exc}",
+            error=str(exc),
             duration_seconds=elapsed,
             extra={"expression": expression},
         )
 
     img_path.write_bytes(data)
-    url_path.write_text(r.image_url[0], encoding="utf-8")
+    ref_url = r.image_url[0] if r.image_url else ""  # Gemini 无 url 模式 → 空串（仍要写文件）
+    url_path.write_text(ref_url, encoding="utf-8")
+    expires_at = _extract_url_expiry(ref_url) if ref_url else ""
+    _expiry_sidecar(img_path).write_text(expires_at, encoding="utf-8")
+    # V3.8 W1：写回全局库。
+    if bible is not None and character_key:
+        bible.write_angle(character_key, f"expression_{expression}", img_path, ref_url, expires_at)
     log(f"[asset-prep] generated: {name}/expression_{expression} → {img_path} ({len(data)} bytes)")
     return AssetResult(
         name=f"{name}/expression_{expression}",
         image_path=str(img_path),
-        url=r.image_url[0],
-        url_expires_at=_extract_url_expiry(r.image_url[0]),
+        url=ref_url,
+        url_expires_at=expires_at,
         source="ok",
         duration_seconds=elapsed,
         extra={"bytes": len(data), "expression": expression},
@@ -845,36 +970,29 @@ def _generate_scene_variant_one(
     elapsed = time.monotonic() - started
 
     r = results[0]
-    if not r.image_url:
-        return AssetResult(
-            name=f"scene_{scene_id}_{variant}",
-            image_path=str(img_path),
-            source="error",
-            error="response_format=url 但未拿到 image_url",
-            duration_seconds=elapsed,
-            extra={"variant": variant},
-        )
-
     try:
-        data = urllib.request.urlopen(r.image_url[0], timeout=30).read()
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        data = fetch_bytes(r)
+    except ie.ImageError as exc:
         return AssetResult(
             name=f"scene_{scene_id}_{variant}",
             image_path=str(img_path),
             source="error",
-            error=f"下载 url 失败：{exc}",
+            error=str(exc),
             duration_seconds=elapsed,
             extra={"variant": variant},
         )
 
     img_path.write_bytes(data)
-    url_path.write_text(r.image_url[0], encoding="utf-8")
+    ref_url = r.image_url[0] if r.image_url else ""  # Gemini 无 url 模式 → 空串（仍要写文件）
+    url_path.write_text(ref_url, encoding="utf-8")
+    expires_at = _extract_url_expiry(ref_url) if ref_url else ""
+    _expiry_sidecar(img_path).write_text(expires_at, encoding="utf-8")
     log(f"[asset-prep] generated: scene_{scene_id}_{variant} → {img_path} ({len(data)} bytes)")
     return AssetResult(
         name=f"scene_{scene_id}_{variant}",
         image_path=str(img_path),
-        url=r.image_url[0],
-        url_expires_at=_extract_url_expiry(r.image_url[0]),
+        url=ref_url,
+        url_expires_at=expires_at,
         source="ok",
         duration_seconds=elapsed,
         extra={"bytes": len(data), "variant": variant},
@@ -1137,22 +1255,85 @@ MAX_SUBJECT_REFERENCES = 4
 
 @dataclass(frozen=True)
 class ShotReferenceUrls:
-    """一个 shot 的 i2i 锚定结果。只含 http(s) URL，不含角色名。"""
+    """一个 shot 的 i2i 锚定结果。不含角色名。
+
+    `urls` 可能是 http(s) URL（MiniMax 缓存）或本地图片路径（Gemini 缓存）——
+    由 ImageBackend.supports_local_refs 决定能否消费。
+
+    V3.8 W1：`stale_labels` 记录**因过期被跳过**的 reference（R4：不得静默使用
+    过期 URL —— 旧行为正是这样，导致跨天跑时角色一致性悄悄失效）。
+    """
     urls: list[str]
     labels: list[str]
     scene_urls: list[str]
+    stale_labels: list[str] = field(default_factory=list)
 
 
-def _read_cached_url(path: Path) -> str:
-    """读 .url.txt。非 http(s) 或文件缺失时返回空串。"""
+def _expiry_sidecar(image_path: Path) -> Path:
+    """过期时间 sidecar 路径：<image>.expires.txt（与 GlobalCharacterStore 同约定）。"""
+    return image_path.with_suffix(".expires.txt")
+
+
+def _read_cached_ref(path: Path, image_path: Path | None = None) -> tuple[str, bool]:
+    """读 reference 并判定新鲜度。返回 (值, 是否过期)。
+
+    V3.8 W1（缺陷 3）：
+    - http(s) URL → 过期时间来源优先级：`.expires.txt` sidecar（生成时写入）
+      → URL 自带的 `Expires` 查询参数（MiniMax OSS 签名 URL 一定带）
+      → 本地图片 mtime（+24h 兜底 TTL）。
+      **能证明过期**才判过期（跳过并告警），无法判定时照常使用
+      （避免误杀还能用的 reference）。
+    - 本地路径（Gemini inlineData）→ **永远不过期**（没有 TTL 概念）。
+    """
+    value = _read_cached_url(path, image_path)
+    if not value or not value.startswith(("http://", "https://")):
+        return value, False
+    expires_at = ""
+    if image_path is not None:
+        sidecar = _expiry_sidecar(Path(image_path))
+        if sidecar.is_file():
+            try:
+                expires_at = sidecar.read_text(encoding="utf-8").strip()
+            except OSError:
+                expires_at = ""
+    if not expires_at:
+        # sidecar 缺失（旧缓存）→ 从 URL 自身的 Expires 参数取
+        expires_at = _extract_url_expiry(value)
+    issued_at = None
+    if not expires_at and image_path is not None:
+        try:
+            import datetime
+            issued_at = datetime.datetime.fromtimestamp(
+                Path(image_path).stat().st_mtime, tz=datetime.timezone.utc,
+            )
+        except OSError:
+            issued_at = None
+    fresh = is_reference_fresh(value, expires_at, issued_at=issued_at)
+    return value, (not fresh)
+
+
+def _read_cached_url(path: Path, image_path: Path | None = None) -> str:
+    """读 reference：优先 .url.txt 里的 http(s) URL，否则回退到同级本地图片路径。
+
+    Gemini 生成的资产只有本地图片（无 url 模式），`.url.txt` 写的是空串，
+    这时回退到本地路径供 `inlineData` 使用。
+
+    R4：回退会让返回值不再是 URL，调用方必须能处理本地路径。
+    `image_path=None` 时行为与 V2.5 完全一致（只认 http URL）。
+    """
     try:
-        if not path.is_file():
-            return ""
-        text = path.read_text(encoding="utf-8").strip()
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            if text.startswith(("http://", "https://")):
+                return text
     except OSError:
-        return ""
-    if text.startswith(("http://", "https://")):
-        return text
+        pass
+    if image_path is not None:
+        try:
+            if image_path.is_file():
+                return str(image_path)
+        except OSError:
+            pass
     return ""
 
 
@@ -1182,16 +1363,18 @@ def resolve_shot_reference_urls(
     *,
     shot_index: int | None = None,
 ) -> ShotReferenceUrls:
-    """按 4 轴 picker 从 assets 缓存收集本镜 subject URL。
+    """按 4 轴 picker 从 assets 缓存收集本镜 subject reference。
 
-    顺序与 V2 pipeline 一致：每个在场角色的角度 URL、表情 URL，然后场景时间变体。
+    顺序与 V2 pipeline 一致：每个在场角色的角度、表情，然后场景时间变体。
     合计最多 MAX_SUBJECT_REFERENCES 个。缓存缺失的轴跳过，不把角色名当作参考图。
+    优先返回 http(s) URL；无 URL 的缓存（Gemini）回退为本地图片路径。
     V2 `run_pipeline` 与 V3 orchestrator 都走这个函数，避免两条管线各选各的。
     """
     root = Path(assets_dir)
     urls: list[str] = []
     labels: list[str] = []
     scene_urls: list[str] = []
+    stale_labels: list[str] = []
 
     def _add(url: str, label: str, *, scene: bool = False) -> None:
         if not url or url in urls or len(urls) >= MAX_SUBJECT_REFERENCES:
@@ -1201,22 +1384,32 @@ def resolve_shot_reference_urls(
         if scene:
             scene_urls.append(url)
 
+    def _add_ref(url_path: Path, image_path: Path, label: str, *, scene: bool = False) -> None:
+        """读一条 reference 并加入；**过期则跳过并记录**（R4：不得静默使用过期 URL）。"""
+        value, stale = _read_cached_ref(url_path, image_path)
+        if stale:
+            stale_labels.append(label)
+            return
+        _add(value, label, scene=scene)
+
     for name in list(getattr(shot, "characters", []) or []):
         angle = pick_angle_for_shot(
             getattr(shot, "shot_type", "") or "",
             camera_motion=getattr(shot, "camera_motion", "") or "",
             shot_index=shot_index,
         )
-        _add(
-            _read_cached_url(character_angle_url_path(name, angle, root)),
+        _add_ref(
+            character_angle_url_path(name, angle, root),
+            character_angle_path(name, angle, root),
             f"{name}/{angle}",
         )
         expression = pick_expression_for_mood(
             list(getattr(shot, "mood", []) or []),
             shot_index=shot_index,
         )
-        _add(
-            _read_cached_url(character_expression_url_path(name, expression, root)),
+        _add_ref(
+            character_expression_url_path(name, expression, root),
+            character_expression_path(name, expression, root),
             f"{name}/expression_{expression}",
         )
 
@@ -1226,15 +1419,29 @@ def resolve_shot_reference_urls(
             infer_shot_time(shot),
             shot_index=shot_index,
         )
-        scene_url = _read_cached_url(scene_variant_url_path(int(scene_id), variant, root))
+        scene_url, scene_stale = _read_cached_ref(
+            scene_variant_url_path(int(scene_id), variant, root),
+            scene_variant_path(int(scene_id), variant, root),
+        )
         scene_label = f"scene_{int(scene_id)}/{variant}"
+        if scene_stale:
+            stale_labels.append(scene_label)
+            scene_url = ""
         if not scene_url:
-            scene_url = _read_cached_url(scene_url_path(int(scene_id), root))
+            scene_url, scene_stale = _read_cached_ref(
+                scene_url_path(int(scene_id), root),
+                scene_path(int(scene_id), root),
+            )
             scene_label = f"scene_{int(scene_id)}/default"
+            if scene_stale:
+                stale_labels.append(scene_label)
+                scene_url = ""
         if scene_url and scene_url not in urls and len(urls) >= MAX_SUBJECT_REFERENCES:
             # 场景 URL 已解析，但合并列表已满。scene_urls 仍记录，调用方不要再塞进第 5 个 ref。
             scene_urls.append(scene_url)
         else:
             _add(scene_url, scene_label, scene=True)
 
-    return ShotReferenceUrls(urls=urls, labels=labels, scene_urls=scene_urls)
+    return ShotReferenceUrls(
+        urls=urls, labels=labels, scene_urls=scene_urls, stale_labels=stale_labels,
+    )

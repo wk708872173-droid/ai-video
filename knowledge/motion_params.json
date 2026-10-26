@@ -1,0 +1,282 @@
+{
+  "_schema_version": "1.0",
+  "_doc": "运动参数知识库（REQ-406）。relation graph 供检索增强提示词优化使用。字段说明见 sandbox/hailuo_video/knowledge_store.py。",
+  "records": [
+    {
+      "id": "mp_0001",
+      "project_id": "seed",
+      "shot_id": "shot_003",
+      "camera_motion": "缓慢推近",
+      "motion_complexity": "simple",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "缓慢转头看向镜头",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "warm-gold",
+      "quality": {
+        "ssim_mean": 0.762,
+        "ssim_min": 0.688,
+        "color_sim_mean": 0.91,
+        "continuity_score": 0.88
+      },
+      "outcome": "ok",
+      "lesson": "Hailuo 擅长转头/点头/轻动；运镜写进 prompt 前缀更稳（style 也要前置）",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "hailuo",
+        "simple",
+        "推近",
+        "转头",
+        "室内"
+      ]
+    },
+    {
+      "id": "mp_0002",
+      "project_id": "seed",
+      "shot_id": "shot_003",
+      "camera_motion": "拉远",
+      "motion_complexity": "complex",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "四足奔跑穿过草地",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {
+        "ssim_mean": 0.41,
+        "ssim_min": 0.28
+      },
+      "outcome": "failed",
+      "lesson": "Hailuo 在四足奔跑这类 complex motion 上质量差：降到 simple 或改用 Ken Burns",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "hailuo",
+        "complex",
+        "奔跑",
+        "四足",
+        "草地",
+        "失败"
+      ]
+    },
+    {
+      "id": "mp_0003",
+      "project_id": "seed",
+      "shot_id": "",
+      "camera_motion": "",
+      "motion_complexity": "static",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {},
+      "outcome": "ok",
+      "lesson": "style_anchor 一定要写真实摄影参考（shot on X + lens + film grain）；不写真实就会一眼 AI",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "style_anchor",
+        "画风",
+        "写实",
+        "摄影"
+      ]
+    },
+    {
+      "id": "mp_0004",
+      "project_id": "seed",
+      "shot_id": "",
+      "camera_motion": "",
+      "motion_complexity": "static",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {},
+      "outcome": "ok",
+      "lesson": "characters[0].appearance 至少 80 字并含 1 个识别锚点（如胸前 V 形白斑）—— 锁脸靠锚点不靠名字",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "appearance",
+        "角色",
+        "一致性",
+        "锚点",
+        "锁脸"
+      ]
+    },
+    {
+      "id": "mp_0005",
+      "project_id": "seed",
+      "shot_id": "shot_003",
+      "camera_motion": "",
+      "motion_complexity": "simple",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "两只狗并排站着，右边那只必须纯黑",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {},
+      "outcome": "failed",
+      "lesson": "色锁写在 description 末尾会失效（模型仍画成两只奶黄）—— 色彩约束必须放在 prompt 开头",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "色锁",
+        "多主体",
+        "颜色",
+        "失败",
+        "prompt位置"
+      ]
+    },
+    {
+      "id": "mp_0006",
+      "project_id": "seed",
+      "shot_id": "",
+      "camera_motion": "",
+      "motion_complexity": "static",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {},
+      "outcome": "failed",
+      "lesson": "中文色词角色名（小黄/小白）训练数据里高频指向橘猫 —— 改用品种名（中华田园犬幼犬）或英文（Puppy）",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "命名",
+        "歧义",
+        "小黄",
+        "猫",
+        "失败"
+      ]
+    },
+    {
+      "id": "mp_0007",
+      "project_id": "seed",
+      "shot_id": "",
+      "camera_motion": "",
+      "motion_complexity": "static",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "9:16",
+      "backend": "minimax",
+      "subject_action": "",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {},
+      "outcome": "ok",
+      "lesson": "16:9 转 9:16 只保留 31.6% 宽度，双主体构图放不下 —— 优先原生出 9:16，裁剪只作兜底",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "竖屏",
+        "9:16",
+        "裁剪",
+        "双主体",
+        "构图"
+      ]
+    },
+    {
+      "id": "mp_0008",
+      "project_id": "seed",
+      "shot_id": "",
+      "camera_motion": "",
+      "motion_complexity": "static",
+      "duration": 6,
+      "resolution": "1080P",
+      "aspect_ratio": "16:9",
+      "backend": "minimax",
+      "subject_action": "",
+      "style_anchor_hash": "",
+      "prompt_positive": "",
+      "prompt_negative": "",
+      "color_lock": "",
+      "quality": {
+        "color_sim_mean": 0.7
+      },
+      "outcome": "failed",
+      "lesson": "跨镜色差 mean 0.700 vs 理想 0.95 —— 需要邻接镜色差门禁 + 统一色基调（color_lock）",
+      "created_at": "2026-10-23T00:00:00+08:00",
+      "tags": [
+        "连续性",
+        "色差",
+        "跨镜",
+        "失败",
+        "color_lock"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "mp_0001",
+      "to": "mp_0003",
+      "type": "same_style",
+      "weight": 0.9
+    },
+    {
+      "from": "mp_0001",
+      "to": "mp_0004",
+      "type": "same_character",
+      "weight": 0.8
+    },
+    {
+      "from": "mp_0001",
+      "to": "mp_0008",
+      "type": "same_scene",
+      "weight": 0.85
+    },
+    {
+      "from": "mp_0002",
+      "to": "mp_0001",
+      "type": "same_motion",
+      "weight": 0.6
+    },
+    {
+      "from": "mp_0005",
+      "to": "mp_0004",
+      "type": "same_character",
+      "weight": 0.85
+    },
+    {
+      "from": "mp_0006",
+      "to": "mp_0004",
+      "type": "same_character",
+      "weight": 0.7
+    },
+    {
+      "from": "mp_0007",
+      "to": "mp_0003",
+      "type": "same_style",
+      "weight": 0.5
+    },
+    {
+      "from": "mp_0008",
+      "to": "mp_0001",
+      "type": "same_scene",
+      "weight": 0.8
+    }
+  ]
+}

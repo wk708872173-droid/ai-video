@@ -115,6 +115,10 @@ def load_storyboard(path: str | Path) -> Storyboard:
             motion_complexity=str(s.get("motion_complexity", "static") or "static"),
             # V3.2 自动开发冲刺（轮 8）：故事弧线字段
             continuity_from_prev=str(s.get("continuity_from_prev", "") or ""),
+            # V3.8 W2：导演解耦字段（缺失 → 空串，向后兼容旧 storyboard.json）
+            static_visual=str(s.get("static_visual", "") or ""),
+            dynamic_narrative=str(s.get("dynamic_narrative", "") or ""),
+            color_lock=str(s.get("color_lock", "") or ""),
         )
         for i, s in enumerate(shots_raw) if isinstance(s, dict)
     ]
@@ -332,7 +336,8 @@ def run_pipeline(
                 _safe_style_anchor(getattr(storyboard, "style_anchor", "") or ""),
             )
             # 与 V3 orchestrator 共用 asset_prep.resolve_shot_reference_urls：
-            # 角度 + 表情 + 场景变体，只传 http(s) URL，最多 4 个。
+            # 角度 + 表情 + 场景变体，最多 4 个。可能是 http(s) URL（MiniMax 缓存）
+            # 或本地图片路径（Gemini 缓存），由 backend 的 supports_local_refs 决定能否消费。
             ref_bundle = ap.resolve_shot_reference_urls(
                 shot, assets_dir, shot_index=idx,
             )
@@ -342,7 +347,10 @@ def run_pipeline(
             img_results = image_backend.generate(
                 full_prompt,
                 # V3.4 ADR-001：aspect_ratio 必须读 env，不准硬编码（V3.3 bug：pipeline.py:342 写死 "16:9"，env=9:16 完全无效）
-                aspect_ratio_value=ie.aspect_ratio(),
+                # F4 修复：改为问 backend 自己要默认画幅 —— 原先无条件读 ie.aspect_ratio()
+                #（那是 MiniMax 的 env key），选 gemini 时会拿 MINIMAX_IMAGE_ASPECT_RATIO
+                # 去撞 Gemini 的支持集校验。各家支持集不同（Gemini 多 4:5/5:4/21:9）。
+                aspect_ratio_value=image_backend.default_aspect_ratio(),
                 subject_reference=ref_urls or None,
             )
             img_bytes = img_results[0].bytes
@@ -536,6 +544,12 @@ def run_pipeline_v3(
     keep_intermediate: bool = True,
     parallel: int = 1,
     motion_budget: int = 3,                      # V3.1：默认 3（MiniMax Max 每天 hailuo-2.3 quota）
+    # V3.8 缺陷 1：画幅入口。None = 不指定 → 由 backend 读自己的 env
+    #   （MINIMAX_IMAGE_ASPECT_RATIO / GEMINI_IMAGE_ASPECT_RATIO）→ 再退 "16:9"。
+    #   旧实现根本没有这个参数，画幅被硬编码在 PipelineConfig 里，导致 9:16 不可达。
+    aspect_ratio: str | None = None,
+    # V3.8 W4：运动参数知识库落盘路径（None = 不记录，默认关闭）
+    knowledge_path: str | Path | None = None,
     run_dir: str | Path = "./run",
     log_path: str | Path | None = None,
     resume_from: str | None = None,             # V3.2：跳过此 phase 之前的 phase
@@ -563,6 +577,8 @@ def run_pipeline_v3(
         keep_intermediate=keep_intermediate,
         parallel=parallel,
         motion_budget=motion_budget,
+        aspect_ratio=aspect_ratio,
+        knowledge_path=Path(knowledge_path) if knowledge_path else None,
         run_dir=Path(run_dir),
         log=StructuredLogger(Path(log_path)) if log_path else None,
         # V3.5 ADR-007：opt-in 注入 ProjectContext
@@ -576,12 +592,13 @@ def run_pipeline_v3(
         cfg.assets_dir = project_context.assets_dir
         cfg.run_dir = project_context.run_dir
         cfg.log = cfg.log or StructuredLogger(project_context.log_path)
-        # 自动注入 style_anchor + aspect_ratio（如果 storyboard 有且 config 没设）
-        sb_style = getattr(storyboard, "style_anchor", "") or ""
-        if sb_style:
-            from hailuo_video.asset_prep import _safe_style_anchor
-            cfg.aspect_ratio = cfg.aspect_ratio or project_context.aspect_ratio
-            # style_anchor 已由 _safe_style_anchor 处理，storyboard 默认行为保留
+        # V3.8 缺陷 1：画幅注入必须**独立于 style_anchor**。
+        #   旧实现把 `cfg.aspect_ratio = cfg.aspect_ratio or project_context.aspect_ratio`
+        #   嵌在 `if sb_style:` 里 —— ① 没 style_anchor 时完全不注入；
+        #   ② cfg.aspect_ratio 默认 "16:9" 是 truthy，`or` 永不触发 → 两个缺陷叠加，
+        #   画幅永远是 16:9。
+        if not cfg.aspect_ratio and project_context.aspect_ratio:
+            cfg.aspect_ratio = project_context.aspect_ratio
     agent = PipelineAgent(
         cfg,
         resume_from=resume_from,

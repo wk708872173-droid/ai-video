@@ -62,7 +62,10 @@ class ProjectContext:
     log_path: Path
 
     style_anchor: str = ""
-    aspect_ratio: str = "16:9"
+    # V3.8 缺陷 1：默认 None = "不指定画幅"。
+    #   旧的默认值 "16:9" 会经 env_overrides 无条件写进 os.environ，
+    #   把用户 .env 里的 MINIMAX_IMAGE_ASPECT_RATIO=9:16 覆盖掉。
+    aspect_ratio: str | None = None
     motion_budget: int = 3
     pipeline_version: str = "V3.5"
 
@@ -77,7 +80,7 @@ class ProjectContext:
         project_name: str | None = None,
         project_id: str | None = None,
         style_anchor: str = "",
-        aspect_ratio: str = "16:9",
+        aspect_ratio: str | None = None,
         motion_budget: int = 3,
     ) -> "ProjectContext":
         """从 storyboard.json 自动派生 ProjectContext。
@@ -87,7 +90,7 @@ class ProjectContext:
             project_name: 人类可读名（None = 从 path basename 派生）
             project_id: 自定义 hash（None = sha256(content)[:8] 自动派生）
             style_anchor: 项目级风格锚点
-            aspect_ratio: 默认 16:9
+            aspect_ratio: 画幅；None = 不指定（沿用 env / backend 默认）
             motion_budget: 默认 3
 
         Raises:
@@ -115,10 +118,14 @@ class ProjectContext:
 
         # 默认 env_overrides（V3.5 ADR-007-C）
         env_overrides = {
-            "MINIMAX_IMAGE_ASPECT_RATIO": aspect_ratio,
             "MINIMAX_VIDEO_RESOLUTION": "1080P",
             "HAILUO_VIDEO_PROJECT_ID": pid,
         }
+        # V3.8 缺陷 1：只有**显式指定**画幅才写 env。
+        #   旧实现无条件写 MINIMAX_IMAGE_ASPECT_RATIO=aspect_ratio（默认 "16:9"），
+        #   apply_env() 会把用户 .env 里的 9:16 覆盖掉 —— 竖屏在生产路径完全不可达。
+        if aspect_ratio:
+            env_overrides["MINIMAX_IMAGE_ASPECT_RATIO"] = aspect_ratio
 
         return ProjectContext(
             project_id=pid,
@@ -143,6 +150,18 @@ class ProjectContext:
         V3.5 ADR-007-A：path 加 project_id namespace → 不同项目不撞库
         """
         return self.assets_dir / _safe_filename(character_name)
+
+    @property
+    def character_bible_dir(self) -> Path:
+        """V3.8 W1：全局角色圣经目录（跨项目共享）。
+
+        **刻意在 assets_dir 之外** —— ADR-007 的项目隔离语义完全不变：
+        assets_dir = sandbox/assets/characters/{project_id}/
+        角色圣经   = sandbox/assets/character_bible/{character_key}/
+        因此 ProjectRegistry.cleanup() 不会误删全局库。
+        """
+        from hailuo_video.character_bible import DEFAULT_BIBLE_DIR
+        return DEFAULT_BIBLE_DIR
 
     def character_angle_path(self, character_name: str, angle: str) -> Path:
         return self.character_dir(character_name) / f"{angle}.jpg"

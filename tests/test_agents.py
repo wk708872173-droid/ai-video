@@ -133,6 +133,41 @@ def test_image_gen_idempotency_key_uses_prompt_and_refs():
     assert k1 != k3
 
 
+# ---------- ImageGenAgent reference 解析（Gemini 本地 ref 支持） ----------
+
+def test_image_gen_reference_urls_keeps_local_paths_for_capable_backend():
+    """Gemini 缓存的 ref 是本地路径；声明 supports_local_refs 时不能被过滤掉。
+
+    过滤掉 = 角色一致性静默消失（R4）。
+    """
+    local = "assets/characters/农夫/front.jpg"
+    backend = MagicMock()
+    backend.supports_local_refs = True
+    urls = ag.ImageGenAgent._reference_urls({"subject_references": [local]}, backend)
+    assert urls == [local]
+
+
+def test_image_gen_reference_urls_filters_local_paths_for_minimax_like_backend():
+    """回归：不支持本地 ref 的 backend 维持原过滤（http only）。"""
+    backend = MagicMock()
+    backend.supports_local_refs = False
+    task = {"subject_references": ["assets/characters/x/front.jpg", "https://e.com/a.jpg"]}
+    assert ag.ImageGenAgent._reference_urls(task, backend) == ["https://e.com/a.jpg"]
+
+
+def test_image_gen_reference_urls_defaults_to_http_only_when_backend_absent():
+    """旧调用方式（不传 backend）行为不变。"""
+    task = {"subject_references": ["assets/x.jpg", "https://e.com/a.jpg"]}
+    assert ag.ImageGenAgent._reference_urls(task) == ["https://e.com/a.jpg"]
+
+
+def test_image_gen_reference_urls_caps_at_four_for_local_paths():
+    backend = MagicMock()
+    backend.supports_local_refs = True
+    refs = [f"assets/{i}.jpg" for i in range(6)]
+    assert len(ag.ImageGenAgent._reference_urls({"subject_references": refs}, backend)) == 4
+
+
 # ---------- VideoSynthAgent ----------
 
 def test_video_synth_validate_missing_image_path():

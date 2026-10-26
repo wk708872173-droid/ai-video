@@ -215,7 +215,7 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 #### REQ-101 · 7 个 domain agents + orchestrator
 - **用户故事**：作为开发者，我希望每阶段（脚本/物料/图像/视频/TTS/拼接/QA）可独立测试、可独立替换
 - **验收**：
-  - 机器：`pytest tests/ -q` — `[UNVERIFIED]` 当前 collect 368 tests；正式报告需跑 `--no-header`
+  - 机器：`pytest tests/ -q` — 当前 **1209 passed, 12 skipped**（2026-10-26）；正式报告需跑 `--no-header`
   - 人工：每个 Agent 可单独 mock 后跑 pipeline 端到端
 - **优先级**：P1
 - **实现位置**：`sandbox/hailuo_video/{agents,orchestrator,artifact,retry,log}.py`
@@ -437,14 +437,34 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 
 ## 已知问题（与 PRD 并行追踪）
 
-> 2026-09-29 复核：当前无未修复的已知问题。原 BUG-001（`_submit` 返回 dict 而非 task_id 字符串）已实测确认不存在，作废——详见 §待澄清问题 ✅ 行 + §变更日志 V3.2 (复核)。
->
-> 新发现的疑似问题请直接加在此表，并在 §变更日志 留 entry。
+> **2026-10-26 更新**：原表自 2026-09-29 起一直标"当前无未修复的已知问题"，但同期
+> `sample/*/README.md`、`logs/_*/SUMMARY.md`、`docs/drafts/README.md` 里实际记录了 30+ 条
+> 活 bug —— **空表本身就是一条文档缺陷**（让人以为没有坑）。下表按 V3.8 审计后的真实状态重填。
 
-| ID | 严重度 | 描述 | 计划修复 |
+| ID | 严重度 | 描述 | 状态 / 计划修复 |
 |---|---|---|---|
+| BUG-101 | 🔴 高 | **9:16 在 V3 生产路径不可达**：`.env` 的 `MINIMAX_IMAGE_ASPECT_RATIO=9:16` 被 4 处硬编码遮蔽（`ProjectContext` 默认值 → `env_overrides` 覆盖 → `run_pipeline_v3` 无该形参 → `or` 短路）；CLI `pipeline` 子命令无 `--aspect-ratio` | ✅ **V3.8 已修**（D-027）。画幅解析改为"显式值 > backend env > 16:9"，CLI 补 `--aspect-ratio` |
+| BUG-102 | 🔴 高 | **`motion_complexity="static"` 静默降级**：不进 motion_gen → 走 Ken Burns 兜底，却报 `[OK] ... (0 bytes, 19.1s)`，无 WARN | ✅ **V3.8 已修**（D-027）。记 event + 进 `PipelineResult.consistency` + CLI `[WARN]` |
+| BUG-103 | 🔴 高 | **多镜 storyboard 全部镜头共用最后一张图**：`ImageGenAgent` 的 artifact_id 用结果下标而非 shot 序号，`Registry.add` 按 id 覆盖 | ✅ **V3.8 已修**（D-027）。artifact_id 与落盘文件名都按 shot 隔离 |
+| BUG-104 | 🔴 高 | **12 个 director 字段到不了模型**：只服务人工审稿；`camera_motion` 连视频模型都没进过 | ✅ **V3.8 已修**（D-022）。static_visual → image prompt，dynamic_narrative → motion prompt |
+| BUG-105 | 🟠 中 | **prompt 占位符字面泄漏**：`render_storyboard_prompt` 从未被调用 → `{three_beat_hint}` 等 4 个占位符以花括号进 LLM | ✅ **V3.8 已修**（D-022）。已接线 + 改用安全填充 |
+| BUG-106 | 🟠 中 | **reference URL 24h 过期不校验**：跨天跑角色一致性锚定静默失效 | ✅ **V3.8 已修**（D-021）。过期即跳过 + WARN，不再静默使用 |
+| BUG-107 | 🟠 中 | **角色跨天漂移**：character sheet 每项目/每天重生成 → Day1 与 Day2 不是同一套画 | ✅ **V3.8 已修**（D-021）。全局角色圣经按视觉身份跨项目复用 |
+| BUG-108 | 🟠 中 | **跨镜连续性无门禁**：实测跨镜色差 mean=0.700 vs 理想 0.95，而旧门禁阈值 0.65 形同虚设 | ✅ **V3.8 已修**（D-023）。新增 `continuity.py`，阈值 0.90，默认只报警 |
+| BUG-109 | 🟠 中 | **拼接层放大崩溃**：Hailuo 8fps 与 Ken Burns 24fps 混合，`-c copy` 不重采样 → 帧突跳跨段扩散 | ✅ **V3.8 已修**（D-023）。叠化前统一 `fps=24` |
+| BUG-110 | 🟠 中 | **registry 落盘静默失败**（`except OSError: pass`）→ 续跑信息丢失无人知晓 | ✅ **V3.8 已修**（D-027）。记 event + 进 consistency（不 raise） |
+| BUG-111 | 🟡 中 | **`concat_files` 的 `duration_seconds` 报的是墙钟耗时**（40.5s 的片子报 0.18s） | ✅ **V3.8 已修**（D-027）。改用 `probe_duration`，墙钟另存 `elapsed_seconds` |
+| BUG-112 | 🟡 中 | **零 negative prompt 支持**：生成路径无"禁止出现什么"的表达 | ✅ **V3.8 已修**（D-025）。能力声明式 + 内联（不发未确认字段） |
+| BUG-113 | 🟡 中 | **运动参数知识库不存在**（REQ-406）—— 各 sample 的实测经验只是散文，无法被程序消费 | ✅ **V3.8 已修**（D-024）。`knowledge/motion_params.json` + 关键词/关系边检索 |
+| BUG-114 | 🟡 中 | **中文色词角色名歧义**："小黄" 在训练数据里高频指向橘猫（已知事故：first_frame 是狗仍出猫） | 🟡 **部分修**（D-021）。已加纯代码告警；根因（模型侧）需改用品种名/英文 |
+| BUG-115 | 🟡 中 | **Hailuo 多角色 I2V 颜色合并**：双角色同框 + complex motion → 两角色被归一化成同色 | ⬜ **未修**。等模型侧；短期用 `motion_complexity=simple` + 单镜构图规避 |
+| BUG-116 | 🟡 中 | **Hailuo 单段崩溃率 ~1/3**（样本估计，待更大样本确认） | 🟡 **部分修**（D-023）。跨镜门禁 + fps 归一化只能缓解拼接放大，单段根因未解 |
+| BUG-117 | 🟡 中 | **MiniMax OSS URL 过期后无重新托管途径**（无上传端点）→ 过期只能重新生成（漂移风险） | ⬜ **未修**。Gemini 后端走本地字节无此问题；MiniMax 侧待用户提供托管方案 |
+| BUG-118 | 🟢 低 | **`editing` phase 的 `_collect_video_paths_for_editing` 含一段与首段完全相同的死分支** | ✅ **V3.8 已修**（D-027）。死分支已删 |
+| BUG-119 | 🟢 低 | **`last_frame_image` 死代码**：`_generate_i2v` 接受 last_frame 但 API 不支持（2013） | ⬜ **未修**。本轮未触及 `motion_backend.py`（红线） |
+| BUG-120 | 🟢 低 | **PRD 声称 Task Scheduler 脚本待生成，但 `scripts/daily_cron_setup.py` 已存在** | ⬜ **未修**。文档漂移，待下次文档批处理 |
 
----
+> 新发现的疑似问题请直接加在此表，并在 §变更日志 留 entry。
 
 ## 验收标准模板
 
@@ -501,7 +521,7 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 ```bash
 # 1. 全测试通过
 python -m pytest tests/ -q
-# 期望：649 passed, 2 skipped（2026-10-10）
+# 期望：1209 passed, 12 skipped（2026-10-26）
 
 # 2. CLI help 全功能展示
 python -m hailuo_video --help
@@ -551,6 +571,9 @@ python scripts/daily_cron.py --once
 | **V3.2 自动开发冲刺（轮 12）** | **2026-09-30** | **L2 多帧定格动画实装（0 Hailuo quota + 30 image-01 调用）**：① **`scripts/multi_frame_shot.py`**：每镜生成 5 张"动作阶段"图（image-01），用 ffmpeg xfade 拼成 6 秒定格动画（每帧 1.2s + 0.3s crossfade）。② **6 镜 × 5 帧动作描述**（脚本内置硬编码）：shot_001（蜷缩入睡→睁眼→前爪伸→弓背打哈欠→转头望窗）/ shot_002（走入→左爪迈→右爪迈→接近花→鼻子贴花）/ shot_003（蹲伏→直身→转头→转回→尾巴尖摆）/ shot_004（走到坐垫→转圈→趴下→爪盖鼻→闭眼）/ shot_005（睁眼→半闭→闭合→全闭→呼吸起伏）/ shot_006（睡姿→微睁眼→打哈欠→坐起→看见小鸟）。③ **修复 xfade chain bug**：第二个 xfade 误用 `v_i` 作输入而不是前一个 xfade 的输出 `xf_i`；修复为 `prev_label = "v0" if i == 0 else f"xf{i}"`。④ **`scripts/finalize_l2_story.py`**：给 6 个 shot 加 ambient audio + 胶片颗粒，6 镜 concat 拼成完整 36s mp4。⑤ **产物**：[sample/story_arc_orange_cat_4_seasons_L2_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L2_FINAL.mp4) 36s / 1280×720 / 带音频 / 7.2 MB —— **角色真动作阶段 + 手持呼吸 + 胶片颗粒**；与 L1 相比，"猫真的在醒来 + 镜头手持呼吸 + 整体电影质感"。 | PM-Agent |
 | **V3.2 自动开发冲刺（轮 13）** | **2026-09-30** | **完整归档**（用户授权"做 PRD changelog + 更新所有文件 + 存档"）：① PRD §变更日志记录轮 11/12 L1+L2 entry；② PRD §能力快照 + §终极目标反映 L2 已达"可发小红书"水平；③ 更新 `sample/story_arc_orange_cat_4_seasons/README.md` 含三档产物对照（T1 cinema / L1 微动 / L2 定格）；④ 重生成 `PROMPTS.txt` 包含 L2 5-frame prompts；⑤ 创建 `scripts/README.md` 索引 7 个产品脚本；⑥ 全测试 527 passed 通过（无回归）。**总归档产物 8 件**：[sample/story_orange_cat_4_seasons_final.mp4](sample/story_orange_cat_4_seasons_final.mp4)（原版 36s / 1.26 MB / 硬切）/ [story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_CINEMA_FINAL.mp4)（T1 cinema / 36s / 7.9 MB）/ [story_arc_orange_cat_4_seasons_L1_FINAL.mp4](sample/story_arc_orange_cat_4_seasons_L1_FINAL.mp4)（L1 微动 / 36s / 7.9 MB）/ [story_arc_orange_cat_4_seasons_L2_FINAL.mp4](sample/story_orange_cat_4_seasons_L2_FINAL.mp4)（L2 定格动画 / 36s / 7.2 MB / **含真实角色动作阶段**）/ storyboard JSON × 2 / PROMPTS.txt / README.md。 | PM-Agent |
 
+| **V3.8 文献驱动的全量优化（6 条工作流 + P0 止血批）** | **2026-10-26** | **用 arXiv 检索（16 组查询）把论文方法逐条映射到本项目已定位到 file:line 的缺陷**，形成 6 条工作流 + 1 个 P0 批，7 批分批落地，每批独立过 `scripts/auto_dev.py` 门禁。**P0 止血批（4 个静默失败）**：① 9:16 在 V3 生产路径不可达（4 处硬编码叠加遮蔽 env）→ 画幅解析改为「显式值 > backend env > 16:9」+ CLI `--aspect-ratio`；② `motion_complexity=static` 静默降级仍报 `[OK] (0 bytes)` → 记 event + 进 `PipelineResult.consistency` + CLI `[WARN]`；③ 多镜 storyboard 全部镜头共用最后一张图（artifact_id 未按 shot 隔离，`Registry.add` 按 id 覆盖）→ id 与落盘文件名都按 shot 隔离；④ registry 落盘 `except OSError: pass` 静默失败 → 记 event + 进 consistency（**不 raise**）。**W1 全局角色圣经**（`character_bible.py`）：角色参考图按「视觉身份」（appearance+palette+style_anchor 哈希，**不含名字**）跨项目复用 —— 修角色跨天漂移 + reference URL 过期静默失效 + 中文色词歧义（"小黄"→橘猫）纯代码告警。**W2 导演解耦**（`director.py`）：12 个 director 字段拆成 static_visual（→image prompt）+ dynamic_narrative（→motion prompt），**camera_motion 此前连视频模型都没进过**；顺带修 prompt 占位符字面泄漏（`render_storyboard_prompt` 从未被调用）与 `prompt_70_30` 复制粘贴缺陷。**W3 跨镜连续性门禁**（`continuity.py`）+ 叠化前 `fps=24` 归一化：实测跨镜色差 0.700 vs 理想 0.95，旧门禁 0.65 形同虚设 → 新阈值 0.90 + 5 维可解释报告。**W4 知识库 + 负提示词**：`knowledge/motion_params.json`（REQ-406，8 条种子来自实测复盘+ relation graph，纯 stdlib 检索不引入向量库）+ `negative_prompt.py`（能力声明式，不发未确认字段以免 4xx 且已计费）。**W5 竖屏**：`crop.py` 主体感知裁剪（纯 PIL 显著性，零新依赖）+ `to_vertical` 补 `crop_frac`。**W6 VLM 评审接口**（`vlm_review.py`）：评审器 ABC + 5 维 + 可解释报告 + CLI `review` 子命令，**默认 mock 零网络调用**，真 API 需 `--enable-real` + `GEMINI_API_KEY` + `GEMINI_VLM_MODEL` 三者齐备（缺一显式报错，不静默退回 mock）。**新增测试 197 个**（8 个新文件），**全测试 1209 passed, 12 skipped**（较 986 +223）；coverage 82.0%。**方法论教训**：「实现已存在但从未接线」是一类独立缺陷（`prompts_director.py` 的 parse/apply 与 `render_storyboard_prompt` 都有单测但生产零调用）。对应 **D-021 ~ D-028** + **L-011 ~ L-013**。⏳ **真实 API 效果待用户手工烟测**（10 项清单见 `knowledge/decisions.md` D-028；不代打计费端点）。 | PM-Agent |
+| **V3.5 功能测试修复（2026-10-22）** | **2026-10-22** | **对 10-20~10-22 开发内容做功能测试后修 3 个缺陷（D1/D2/D3）**：① **D1 `script --backend mock` 结构性不可用** —— CLI 宣传该模式但 `MockBackend` 无预设响应即抛 `AssertionError`（生产代码 `.on()` 调用数为 0），且报错文案还在推荐这条走不通的路。新增 `CliMockBackend`（内置 canned 三角色 JSON）供 CLI 用，`MockBackend` 一行不动（「未匹配即抛」是被单测依赖的设计，加默认回退会让忘注册响应的测试静默变绿，违反 §2 证据阶梯）；镜头数从 prompt 正则读回（`_parse_shots_payload` 要求精确相等）。替换 1 项把 bug 写成契约的旧测试。② **D2 README 命令从仓库根跑不了** —— 新增 `pyproject.toml`（`package-dir={sandbox}`）走可编辑安装，README 快速上手第 1 步改为 `pip install -e .`；顺带补上项目首个依赖声明（pillow/imageio-ffmpeg/edge-tts，`torch`/`diffusers` 归可选 extra；**更正：`requests` 不是依赖**）。③ **D3 `auto_dev.py` 在 Windows cp932 控制台崩溃** —— emoji 触发 `UnicodeEncodeError`，且兜底异常处理器自己也抛，使门禁交出**不可信的退出码**；入口重配 stdout/stderr 为 utf-8 + `errors=replace`，兑现 **L-009**（教训早已记录，脚本一直没落实）。④ 提案与实施记录存 `docs/drafts/`（含对提案自身过强说法的更正）。**全测试 986 passed, 12 skipped**（较 968 +18）；`auto_dev.py` 在 cp932 且不设任何环境变量下 4 步全 PASS、EXIT=0。对应 **D-018 / D-019 / D-020**。 | PM-Agent |
+| **V3.5 Gemini Nano Banana 图像后端（2026-10-22）** | **2026-10-22** | **增接 Google `gemini-2.5-flash-image`（Nano Banana），与 MiniMax `image-01` 平级**（`--image-backend gemini`，`image`/`pipeline`/`prep` 三处可选）。难点不在调 API 而在 **reference 契约**：MiniMax 收 http(s) URL、Gemini `inlineData` 收裸字节，且 Gemini **无 url 响应模式**（永远 inline base64）、**无 `n` 参数**（一次一张，n>1 顺序循环）。原实现下 `_read_cached_url` 非 http 一律返回 `""`、`_reference_urls` 硬过滤非 http → 本地 ref 被**静默丢弃**，角色一致性无声消失（违反 R4）。解法：把 reference 契约扩为「URL 或本地路径」，由 `ImageBackend.supports_local_refs` 声明各自能否消费 —— **不引入任何新组件**。`asset_prep` 加 `fetch_bytes` 替掉 4 处手写 `urlopen`；`.url.txt` **继续写空串**（`has_cached_*` 要求 `.jpg`+`.url.txt` 同时存在才算命中，不写会导致每次 prep 重复计费 ≈ $0.039/张）。fail-closed：MiniMax 收到本地 ref 抛明确错误（存量缓存全 http，零影响）、`finishReason` 非 OK 一律抛错不返回 0 张、`thought:true` 草稿图跳过。响应是 **camelCase `inlineData`**（`inline_data` 是 Python SDK 写法，混用会静默取不到图）；`imageConfig.imageSize` 本模型会拒收。**全测试 986 passed**。⏳ **真实 API 烟测待用户执行**（约 $0.039/张，不代打计费端点）。对应 **D-017**。 | PM-Agent |
 ---
 
 ## V3.2 自动开发冲刺（轮 14）—— T2 真电影版实装（2026-10-08）
@@ -605,7 +628,7 @@ python scripts/daily_cron.py --once
 - `sandbox/hailuo_video/prd.md`（V2.x 协议层变更详表）—— 实现细节
 - `storyboard_template.json` —— 标准模板
 - `sandbox/hailuo_video/` —— 源代码
-- `tests/` —— **649 passed, 2 skipped**（2026-10-10）
+- `tests/` —— **1209 passed, 12 skipped**（2026-10-26）
 
 ---
 

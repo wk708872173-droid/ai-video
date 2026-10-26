@@ -15,6 +15,7 @@ from typing import Any
 
 from hailuo_video.editing import ffmpeg_runner
 from hailuo_video.editing.errors import EditingError
+from hailuo_video.editing.fps import DEFAULT_TARGET_FPS, fps_filter
 from hailuo_video import editing as _editing_pkg
 
 
@@ -111,6 +112,7 @@ def crossfade_clips(
     audio_crossfade: bool = True,
     timeout: int = 300,
     extra_args: list[str] | None = None,
+    target_fps: int | None = DEFAULT_TARGET_FPS,
 ) -> CrossfadeResult:
     """多段视频叠化为一条（REQ-303.b 重叠帧叠化）。
 
@@ -120,6 +122,9 @@ def crossfade_clips(
         transition: xfade transition 名（VALID_XFADE_TRANSITIONS）
         overlap_seconds: 相邻段叠化时长（0.05..2.0 秒）
         audio_crossfade: True 用 acrossfade 滤镜叠音轨；False 静音叠化段
+        target_fps: V3.8 W3：统一目标帧率（None = 不归一化，保持旧行为）。
+            Hailuo 出 8fps、Ken Burns 出 24fps，混合帧率会让帧突跳跨段扩散
+            （logs/_diagnose_3to4_jump_20261016/SUMMARY.md:41-55）。
     失败抛 EditingError。
     """
     started = time.monotonic()
@@ -141,8 +146,12 @@ def crossfade_clips(
         w, h = first_dim
 
     # 拼 filter chain：先 scale → 再 xfade → 再 acrossfade（可选）
+    # V3.8 W3：在 scale 之后插 fps 归一化 —— 各段帧率统一（Hailuo 8fps / Ken Burns 24fps
+    #   混合会让帧突跳跨段扩散，见 logs/_diagnose_3to4_jump_20261016/SUMMARY.md:41-55）。
+    fps_chain = f",{fps_filter(target_fps)}" if target_fps else ""
     scale_chain = "".join(
-        f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i:02d}];"
+        f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2{fps_chain},setsar=1[v{i:02d}];"
         for i in range(len(video_paths))
     )
     xfade_chain = _xfade_filter_chain(

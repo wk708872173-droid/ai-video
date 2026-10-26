@@ -28,6 +28,19 @@ import time
 from pathlib import Path
 
 
+# Windows 控制台默认 cp932（GBK 系），编码不了报告里大量使用的
+# ✅/❌/⏭️/📋 等标记 → 门禁跑到最后一步崩在 print 上，甚至让兜底的异常处理器
+# 自己也抛 UnicodeEncodeError，使调用方拿不到可信退出码。
+# errors="replace" 是关键：再遇到无法编码的字符时降级为替换字符而非抛异常，
+# 保证门禁永远不会因为一个字符丢失退出码。
+# D3（docs/drafts/auto_dev_console_encoding_draft.md）
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # Python 3.7+
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 REPO = Path(__file__).resolve().parents[1]
 TESTS = REPO / "tests"
 SANDBOX = REPO / "sandbox"
@@ -124,14 +137,19 @@ def step_secret_scan(_args) -> bool:
 
 def step_lint(_args) -> bool:
     header("Step 3: syntax check（py_compile）")
-    rc, out, err = run(["python", "-m", "py_compile"], cwd=None)
-    # 单独 run py_compile 每个文件
+    # F6 修复（2026-10-22）：此前只扫 SANDBOX，导致 tests/ 与 scripts/ 不在语法检查
+    # 范围内 —— 报告里那句「All N Python files compile clean」不含新增测试文件，
+    # 与直觉不符。实际风险为零（pytest 收集时即会编译），但门禁覆盖范围该说实话。
+    roots = [SANDBOX, TESTS, REPO / "scripts"]
+    py_files: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            py_files.extend(
+                p for p in root.rglob("*.py")
+                if "__pycache__" not in str(p) and "MODULE" not in str(p)
+            )
     failed = []
-    for py in SANDBOX.rglob("*.py"):
-        if "__pycache__" in str(py):
-            continue
-        if "MODULE" in str(py):  # skip self-test modules
-            continue
+    for py in py_files:
         rc, _, stderr = run(["python", "-m", "py_compile", str(py)], timeout=30)
         if rc != 0:
             failed.append((str(py), stderr.strip().split("\n")[-1] if stderr else ""))
@@ -140,7 +158,8 @@ def step_lint(_args) -> bool:
         for f, e in failed:
             print(f"  {f}\n    → {e[:200]}")
         return False
-    print(f"✅ All {len(list(SANDBOX.rglob('*.py')))} Python files compile clean")
+    print(f"✅ All {len(py_files)} Python files compile clean "
+          f"(sandbox/ + tests/ + scripts/)")
     return True
 
 

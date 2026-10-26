@@ -105,12 +105,19 @@ class PipelineConfig:
     video_seconds: int = 5
     video_fps: int = 8
     video_effect: str = "cycle"
-    aspect_ratio: str = "16:9"
+    # V3.8 缺陷 1：默认 None = "不指定"。旧的 "16:9" 硬默认值会遮蔽
+    #   image_engine.default_aspect_ratio()（读 MINIMAX_IMAGE_ASPECT_RATIO /
+    #   GEMINI_IMAGE_ASPECT_RATIO），导致 .env 配 9:16 在 V3 生产路径完全失效。
+    aspect_ratio: str | None = None
     assets_dir: Path = Path("./assets")
     skip_asset_prep: bool = False
     keep_intermediate: bool = True
     parallel: int = 1
     motion_budget: int = 3                     # V3.1：MiniMax Max 默认每天 3 次 hailuo-2.3
+    # V3.8 W4：运动参数知识库落盘路径。None = **不记录**（默认关闭）。
+    #   默认关闭的原因：写库是副作用，且默认路径在仓库内（knowledge/motion_params.json）
+    #   —— 测试跑一次就会污染人工维护的种子数据。CLI 显式传入才开启。
+    knowledge_path: Path | None = None
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     log: StructuredLogger | None = None
     run_dir: Path = Path("./run")
@@ -281,12 +288,27 @@ class PipelineAgent:
         sb = ctx["storyboard"]
         # 收集所有 candidate shots（motion_complexity != static）
         candidates = []
+        static_shots: list[int] = []
         for i, shot in enumerate(sb.shots):
             mc = getattr(shot, "motion_complexity", "static") or "static"
             if mc == "static":
+                static_shots.append(i)
                 continue
             priority = 1 if mc == "complex" else 0
             candidates.append((priority, i, shot))
+        # V3.8 缺陷 2：static shot 被排除 = 该镜头**不会**调用 Hailuo，
+        #   而是走 Ken Burns 兜底（不烧 quota，也没有真 AI 运动，只有慢推慢拉的伪运动）。
+        #   旧行为完全静默——CLI 只打一行 "[OK] shot_003.mp4 (0 bytes, 19.1s)"，
+        #   要靠人工抽帧才发现（见 sample/story_arc_qingdao_autumn/README.md:81-89）。
+        #   现在显式记 event + 落进 PipelineResult.consistency，CLI 打 [WARN]。
+        if static_shots:
+            self.logger.event(
+                "motion_skipped_static",
+                shot_indices=static_shots,
+                count=len(static_shots),
+                reason="motion_complexity=static → Ken Burns 兜底（非真 AI 运动）",
+            )
+        ctx["static_skipped_shots"] = static_shots
         # 按 priority 降序；同 priority 按 index 升序
         candidates.sort(key=lambda t: (-t[0], t[1]))
         # 截取 budget
@@ -365,7 +387,7 @@ class PipelineAgent:
             "video_seconds": getattr(self.config, "video_seconds", 5),
             "video_fps": getattr(self.config, "video_fps", 8),
             "video_effect": getattr(self.config, "video_effect", "cycle"),
-            "aspect_ratio": getattr(self.config, "aspect_ratio", "16:9"),
+            "aspect_ratio": self._resolve_aspect_ratio(),
             "keep_intermediate": getattr(self.config, "keep_intermediate", True),
             "parallel": getattr(self.config, "parallel", 1),
         }
@@ -379,26 +401,43 @@ class PipelineAgent:
         voiceover = getattr(shot, "voiceover", "") or ""
 
         if agent_name == "image_gen":
-            # 70/30 提示法拼接：style_anchor + description + [shot_type] + [运镜] + [动作] + [氛围]
-            # V3.2 自动开发冲刺（轮 7）：style_anchor 必须放在最前（基线优先级）
-            # V3.4 ADR-006：style_anchor 已由 _safe_style_anchor 兜底为非空 + 含守卫词
-            prompt_parts = []
-            prompt_parts.append(f"[风格:{style_anchor}]")
-            prompt_parts.append(description)
-            camera_motion = getattr(shot, "camera_motion", "") or ""
-            subject_action = getattr(shot, "subject_action", "") or ""
-            mood = list(getattr(shot, "mood", []) or [])
-            shot_type = getattr(shot, "shot_type", "") or ""
-            if shot_type:
-                prompt_parts.append(f"[{shot_type}]")
-            if camera_motion:
-                prompt_parts.append(f"[运镜:{camera_motion}]")
-            if subject_action:
-                prompt_parts.append(f"[动作:{subject_action}]")
-            if mood:
-                prompt_parts.append(f"[氛围:{', '.join(mood)}]")
-            task["prompt"] = " ".join(prompt_parts)
+            # V3.8 W2（缺陷 5）：导演字段真正进模型。
+            # 旧行为：prompt 只拼 style_anchor + description + shot_type +
+            #   camera_motion + subject_action + mood —— 12 个 director 字段
+            #   （lens / lighting / depth_of_field / color_grade / ...）
+            #   **一个都没进 prompt**，只服务人工审稿。
+            # 新行为：用 DirectorBrief 的**静态视觉条件**（DramaDirector 式解耦，
+            #   arXiv:2606.24107）—— 角色外观 + 场景 + 构图 + 焦段 + 景深 + 光线 + 色彩。
+            brief = self._director_brief(shot, sb, style_anchor)
+            static_visual = brief.static_visual
+            if static_visual:
+                task["prompt"] = static_visual
+            else:
+                # 兜底：brief 为空（极端异常）→ 回退旧拼法，不让 prompt 空掉
+                prompt_parts = [f"[风格:{style_anchor}]", description]
+                if getattr(shot, "shot_type", ""):
+                    prompt_parts.append(f"[{getattr(shot, 'shot_type', '')}]")
+                if getattr(shot, "camera_motion", ""):
+                    prompt_parts.append(f"[运镜:{getattr(shot, 'camera_motion', '')}]")
+                if getattr(shot, "subject_action", ""):
+                    prompt_parts.append(f"[动作:{getattr(shot, 'subject_action', '')}]")
+                mood_list = list(getattr(shot, "mood", []) or [])
+                if mood_list:
+                    prompt_parts.append(f"[氛围:{', '.join(mood_list)}]")
+                task["prompt"] = " ".join(prompt_parts)
             task["style_anchor"] = style_anchor      # V3.2：让 image backend 可单独读取
+            task["color_lock"] = brief.color_lock    # V3.8：跨镜色基调（连续性门禁用）
+            # V3.8 W4：负提示词（TIDE 式「正 + 负提示词一次产出」）。
+            #   本项目此前**零**负提示词支持 —— 生成路径只能靠正向描述规避。
+            #   后端若无独立 negative_prompt 字段，image_engine 会内联到 prompt 末尾。
+            try:
+                from hailuo_video.negative_prompt import build_negative_prompt
+                neg = build_negative_prompt(
+                    shot, include_character=bool(getattr(shot, "characters", None)),
+                )
+                task["negative_prompt"] = neg.render()
+            except Exception:
+                task["negative_prompt"] = ""
             # 角度 + 表情 + 场景变体，与 V2 run_pipeline 共用 resolver。
             # 缓存缺失的轴跳过；subject_references 只含 URL，不再传角色名。
             from hailuo_video import asset_prep as ap
@@ -410,6 +449,19 @@ class PipelineAgent:
             task["subject_references"] = list(refs.urls)
             task["scene_references"] = list(refs.scene_urls)
             task["reference_labels"] = list(refs.labels)
+            # V3.8 W1（缺陷 3）：过期 reference 被跳过 —— 记下来，别让角色一致性
+            # 悄悄消失（旧行为是直接用过期 URL → 跨天跑 403 → 锚定失效）。
+            if refs.stale_labels:
+                task["stale_references"] = list(refs.stale_labels)
+                stale_all = ctx.setdefault("stale_references", [])
+                for label in refs.stale_labels:
+                    stale_all.append({"shot_idx": shot_idx, "label": label})
+                self.logger.event(
+                    "reference_stale",
+                    shot_idx=shot_idx,
+                    labels=list(refs.stale_labels),
+                    reason="reference URL 已过期 → 跳过（角色一致性锚定缺失）",
+                )
         elif agent_name == "motion_gen":
             # V3.2 自动开发冲刺（轮 7）：style_anchor 注入 motion_gen subject_action
             # V3.3 P0 修复（2026-10-09）：style_anchor 前置而非后置
@@ -418,9 +470,21 @@ class PipelineAgent:
             #   Hailuo 可能把后半部分当附加修饰忽略 → 视频风格漂移。
             #   新版 `[风格:{style_anchor}] {base_subject_action}` 把风格放最前。
             # V3.4 ADR-006：style_anchor 已 _safe_style_anchor 兜底（非空），无需 if/else 分支
+            #
+            # V3.8 W2（缺陷 5）：改用 DirectorBrief 的**动态叙事条件**。
+            #   旧行为 prompt = "[风格:X] {subject_action}" —— **camera_motion
+            #   从来没进过视频模型**（运镜信息全丢）；direction / pacing /
+            #   narrative_beat / transition 也同样只服务人工审稿。
+            #   新行为：动作 + 运镜 + 屏幕方向 + 节奏 + 氛围 + 节拍 + 转场。
+            brief = self._director_brief(shot, sb, style_anchor)
+            dynamic = brief.dynamic_narrative
             base_subject_action = getattr(shot, "subject_action", "") or description
-            task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"
+            if dynamic:
+                task["subject_action"] = f"[风格:{style_anchor}] {dynamic}"
+            else:
+                task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"
             task["style_anchor"] = style_anchor       # 也单独传，方便后端读取
+            task["color_lock"] = brief.color_lock
             # V3.4 W3 hotfix（2026-10-13）：motion_gen 必须传 image_path 给 hailuo 作 first_frame_image
             #   旧行为：task 缺 image_path → hailuo 走 T2V（纯文本）→ 自由发挥"小黄=橘猫"
             #   新行为：image_path + first_frame_image 都传 → hailuo 走 I2V → 主体锁定
@@ -461,11 +525,88 @@ class PipelineAgent:
 
         return task
 
+    def _director_brief(self, shot: Any, storyboard: Any = None, style_anchor: str = "") -> Any:
+        """V3.8 W2：取 shot 的 DirectorBrief（静态视觉 / 动态叙事解耦）。
+
+        优先用 shot 上已存的 `static_visual` / `dynamic_narrative`（人工编辑过
+        storyboard.json 的情况优先）；否则由 director.plan_director_brief 确定性推导。
+
+        `style_anchor` 必须是**已兜底**的值（`_safe_style_anchor`）—— 空画风会让
+        image prompt 丢掉 ADR-006 的 anti-cartoon 守卫词。
+
+        异常一律吞掉并返回空 brief —— brief 只是提示词增强，**不该让 pipeline 崩**。
+        """
+        from hailuo_video.director import DirectorBrief, plan_director_brief
+
+        if shot is None:
+            return DirectorBrief()
+        stored_static = str(getattr(shot, "static_visual", "") or "").strip()
+        stored_dynamic = str(getattr(shot, "dynamic_narrative", "") or "").strip()
+        stored_lock = str(getattr(shot, "color_lock", "") or "").strip()
+        if stored_static and stored_dynamic:
+            return DirectorBrief(
+                static_visual=stored_static,
+                dynamic_narrative=stored_dynamic,
+                color_lock=stored_lock,
+            )
+        try:
+            brief = plan_director_brief(shot, storyboard, style_anchor=style_anchor)
+        except Exception:
+            return DirectorBrief()
+        if stored_static:
+            brief = DirectorBrief(
+                static_visual=stored_static,
+                dynamic_narrative=brief.dynamic_narrative or stored_dynamic,
+                color_lock=stored_lock or brief.color_lock,
+                lens=brief.lens, lighting=brief.lighting,
+                color_grade=brief.color_grade, pacing=brief.pacing,
+                screen_direction=brief.screen_direction,
+                narrative_beat=brief.narrative_beat,
+                used_fields=brief.used_fields,
+            )
+        elif stored_dynamic:
+            brief = DirectorBrief(
+                static_visual=brief.static_visual,
+                dynamic_narrative=stored_dynamic,
+                color_lock=stored_lock or brief.color_lock,
+                lens=brief.lens, lighting=brief.lighting,
+                color_grade=brief.color_grade, pacing=brief.pacing,
+                screen_direction=brief.screen_direction,
+                narrative_beat=brief.narrative_beat,
+                used_fields=brief.used_fields,
+            )
+        return brief
+
+    def _resolve_aspect_ratio(self) -> str:
+        """V3.8 缺陷 1：画幅解析优先级 = config 显式值 > backend 自己的 env 默认 > "16:9"。
+
+        旧实现硬编码 `getattr(self.config, "aspect_ratio", "16:9")`：
+        PipelineConfig 的默认值本身就是 "16:9"，且 run_pipeline_v3 从不接受外部传入，
+        于是 image_engine.default_aspect_ratio()（读 MINIMAX_IMAGE_ASPECT_RATIO /
+        GEMINI_IMAGE_ASPECT_RATIO）永远轮不到 —— .env 里配 9:16 完全无效。
+        """
+        explicit = str(getattr(self.config, "aspect_ratio", "") or "").strip()
+        if explicit:
+            return explicit
+        backend = getattr(self.config, "image_backend", None)
+        getter = getattr(backend, "default_aspect_ratio", None)
+        if callable(getter):
+            try:
+                value = getter()
+            except Exception:
+                value = ""
+            if value:
+                return str(value)
+        return "16:9"
+
     def _collect_video_paths_for_editing(self, ctx: dict, shot_idx: int) -> list[str]:
         """V3.2 自动开发冲刺（轮 6）：收集 editing phase 需要的 video_paths。
 
-        优先级：motion_gen > video_synth > image_gen（任一有产物即可）。
-        返回 list[str]（路径列表），按 shot_idx 排序。
+        优先级：motion_gen > video_pending > video_synth（Ken Burns fallback）。
+
+        V3.8：旧实现第三个「兜底」分支与第一个分支**代码完全相同**
+        （都是 by_kind_iter("video")），且只在 paths 为空时才走到 → 纯死代码。
+        已删除；并改为按 shot_idx 排序，保证拼接顺序稳定（时间顺序）。
         """
         paths: list[str] = []
         # 优先 motion_gen（真 AI 视频）
@@ -477,12 +618,13 @@ class PipelineAgent:
             for art in self.registry.by_kind_iter("video_pending"):
                 if art.path and Path(str(art.path)).exists():
                     paths.append(str(art.path))
-        # 兜底：video_synth 的产物（Ken Burns fallback）
-        if not paths:
+        # 按 shot_idx 排序（时间顺序稳定）
+        def _key(item: str) -> tuple[int, str]:
             for art in self.registry.by_kind_iter("video"):
-                if art.path and Path(str(art.path)).exists():
-                    paths.append(str(art.path))
-        return paths
+                if str(art.path) == item:
+                    return (int(art.metadata.get("shot_idx", 0) or 0), item)
+            return (0, item)
+        return sorted(paths, key=_key)
 
     def _get_image_path_for_shot(self, ctx: dict, shot_idx: int) -> str:
         """V3.2 自动开发冲刺（轮 6）：从 registry 中找 shot_idx 对应的 image artifact。
@@ -491,8 +633,17 @@ class PipelineAgent:
 
         V3.2 自动开发冲刺（轮 15 修正）：用 .resolve() 把 artifact.path 强转绝对路径
         ——避免 Linux-style 路径（/tmp/...）在 Windows 上 .exists() 返 False。
+
+        V3.8 缺陷 15：**优先按 metadata["shot_idx"] 匹配**。
+        旧实现只按 artifact_id 命名规则找 f"image_{shot_idx}"，而 ImageGenAgent
+        造的是 f"image_{idx}"（结果下标）→ n=1 时所有 shot 都是 "image_0"，
+        匹配到的是最后一个 shot 的图；非首镜则落到"第一个可用图"兜底 → 喂错图。
         """
-        # 优先：按 artifact_id 命名规则（image_NNN）查找
+        # 优先：按 metadata.shot_idx（唯一可靠的身份标识）
+        for art in self.registry.by_kind_iter("image"):
+            if art.metadata.get("shot_idx") == shot_idx and art.path and Path(str(art.path)).resolve().exists():
+                return str(Path(str(art.path)).resolve())
+        # 次选：按 artifact_id 命名规则（image_NNN）
         target_id = f"image_{shot_idx}"
         for art in self.registry.by_kind_iter("image"):
             if art.artifact_id == target_id and art.path and Path(str(art.path)).resolve().exists():
@@ -563,6 +714,8 @@ class PipelineAgent:
             "storyboard": storyboard,
             "shot_count": len(storyboard.shots),
             "intermediate_dir": intermediate_dir,
+            # V3.8 缺陷 2：static 降级镜头的清单（motion_gen phase 回填）
+            "static_skipped_shots": [],
         }
         # 简化的 DAG runner：依 DEFAULT_DAG 顺序执行
         from_idx = self._resolve_resume_index()
@@ -596,6 +749,7 @@ class PipelineAgent:
                         source="motion_fallback",   # V3.4 ADR-002: 标记为降级产出
                         steps=all_steps,
                         intermediate_dir=str(intermediate_dir),
+                        consistency=self._build_consistency(ctx),
                     )
             # 其他 phase 仍走 halt 策略
             if phase.halt_on_error and any(not s.ok for s in phase_steps):
@@ -610,6 +764,7 @@ class PipelineAgent:
                     error=f"phase {phase.name} halted with errors",
                     steps=all_steps,
                     intermediate_dir=str(intermediate_dir),
+                    consistency=self._build_consistency(ctx),
                 )
         # Post-flight QA
         image_paths = [
@@ -632,11 +787,32 @@ class PipelineAgent:
                 all_steps.append(PipelineStep(
                     name="qa_post", index=0, ok=False, error=str(exc),
                 ))
+        # V3.8 W3：跨镜连续性门禁（单镜 SSIM gate 管不到"切点之后"）
+        #   实测跨镜色差 mean=0.700 vs 理想 0.95（logs/_diagnose_3to4_jump_20261016/SUMMARY.md:36-39）
+        #   → 默认**只报警不阻断**（与既有 SSIM gate 一致）。
+        continuity_result = self._evaluate_continuity(ctx)
+        if continuity_result is not None:
+            ctx["continuity_report"] = continuity_result
+            all_steps.append(PipelineStep(
+                name="continuity_post", index=0, ok=continuity_result.ok,
+                duration_seconds=0.0,
+                error="" if continuity_result.ok else continuity_result.format(),
+                extra=continuity_result.to_dict(),
+            ))
+        # V3.8 W4：把本次结果沉淀进运动参数知识库（纯本地写，无 API 消耗）。
+        #   这是 REQ-406 的数据来源 —— 下一轮检索增强（RAPO/TIDE）才能学到东西。
+        self._record_knowledge(ctx, all_steps)
         # Persist registry
+        # V3.8 缺陷 13：旧代码 `except OSError: pass` —— 落盘失败完全静默，
+        # 违反项目 R4「不静默降级」。现在记 event + 写进 PipelineResult.consistency
+        # （**不 raise**：registry 落盘失败不该炸掉已经产出的成片，但必须可见）。
+        registry_save_error = ""
         try:
             self.registry.save_json(self.config.run_dir / "registry.json")
-        except OSError:
-            pass
+        except OSError as exc:
+            registry_save_error = f"{type(exc).__name__}: {exc}"
+            self.logger.event("registry_save_failed", error=registry_save_error)
+        consistency = self._build_consistency(ctx, registry_save_error)
         ok_shots = sum(1 for s in all_steps if s.ok and "image_gen" in s.name)
         failed_shots = sum(1 for s in all_steps if not s.ok)
         return PipelineResult(
@@ -648,4 +824,89 @@ class PipelineAgent:
             source="ok",
             steps=all_steps,
             intermediate_dir=str(intermediate_dir),
+            consistency=consistency,
         )
+
+    def _record_knowledge(self, ctx: dict, steps: list[PipelineStep]) -> None:
+        """V3.8 W4：把本次 shot 结果沉淀进运动参数知识库。
+
+        **默认关闭**（`PipelineConfig.knowledge_path is None`）—— 写库是副作用，
+        且默认路径在仓库内，会污染人工维护的种子数据。CLI 显式配置才开启。
+
+        纯本地写，无 API 消耗；失败不影响成片（异常一律吞掉）。
+        """
+        path = getattr(self.config, "knowledge_path", None)
+        if not path:
+            return
+        try:
+            from hailuo_video.knowledge_store import MotionParamsStore, record_result
+
+            sb = ctx.get("storyboard")
+            shots = list(getattr(sb, "shots", []) or [])
+            if not shots:
+                return
+            store = MotionParamsStore(Path(path))
+            store.load()
+            continuity = ctx.get("continuity_report")
+            sim = float(getattr(continuity, "mean_similarity", 0.0) or 0.0)
+            for shot in shots:
+                record_result(
+                    store,
+                    shot=shot,
+                    quality={"color_sim_mean": sim} if sim else {},
+                    outcome="ok",
+                    save=False,
+                    project_id=str(getattr(self.config.project_context, "project_id", "") or ""),
+                    backend="minimax",
+                )
+            store.save()
+        except Exception as exc:
+            self.logger.event("knowledge_record_failed", error=str(exc))
+
+    def _evaluate_continuity(self, ctx: dict) -> Any:
+        """V3.8 W3：跨镜连续性评估（按 shot 顺序取每镜首帧）。
+
+        异常吞掉返回 None —— 连续性是**质量信号**，不该让已产出的成片崩掉。
+        """
+        from hailuo_video.continuity import evaluate_shot_continuity
+
+        sb = ctx.get("storyboard")
+        shots = list(getattr(sb, "shots", []) or [])
+        if len(shots) < 2:
+            return None
+        paths: list[str] = []
+        for idx in range(len(shots)):
+            p = self._get_image_path_for_shot(ctx, idx)
+            if p:
+                paths.append(p)
+        if len(paths) < 2:
+            return None
+        locks = [str(getattr(s, "color_lock", "") or "") for s in shots]
+        try:
+            return evaluate_shot_continuity(paths, color_locks=locks)
+        except Exception as exc:
+            self.logger.event("continuity_eval_failed", error=str(exc))
+            return None
+
+    def _build_consistency(self, ctx: dict, registry_save_error: str = "") -> dict[str, Any]:
+        """V3.8：把"降级/失败但不影响成片"的信息集中放进 PipelineResult.consistency。
+
+        R4「不静默降级」：这些情况**不该 raise**（成片已产出），
+        但必须让调用方（CLI / daily_cron）看得见。
+        """
+        consistency: dict[str, Any] = {}
+        static_skipped = list(ctx.get("static_skipped_shots") or [])
+        if static_skipped:
+            consistency["static_skipped_shots"] = static_skipped
+            consistency["static_skipped_count"] = len(static_skipped)
+        stale_refs = list(ctx.get("stale_references") or [])
+        if stale_refs:
+            consistency["stale_references"] = stale_refs
+            consistency["stale_reference_count"] = len(stale_refs)
+        continuity = ctx.get("continuity_report")
+        if continuity is not None:
+            consistency["continuity"] = continuity.to_dict()
+            consistency["continuity_ok"] = continuity.ok
+        if registry_save_error:
+            consistency["registry_save_error"] = registry_save_error
+        return consistency

@@ -30,8 +30,8 @@ def test_default_voice_constant():
     assert te.default_voice() == "zh-CN-XiaoxiaoNeural"
 
 
-def test_env_override_voice():
-    os.environ["EDGE_TTS_VOICE"] = "en-US-AvaNeural"
+def test_env_override_voice(monkeypatch):
+    monkeypatch.setenv('EDGE_TTS_VOICE', "en-US-AvaNeural")
     assert te.default_voice() == "en-US-AvaNeural"
 
 

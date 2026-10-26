@@ -12,6 +12,12 @@
   - safe_run(cmd, timeout=60)                → ffmpeg 调用 + 错误捕获
   - probe_duration(mp4) / probe_resolution(mp4) → 探测元数据
 
+V3.8 W5：to_vertical 支持 **主体感知裁剪**（crop_frac / subject_box）。
+  背景：16:9 → 9:16 只留 31.6% 宽度，双主体构图放不下，
+  旧的三档锚点（center/left/right）会裁掉偏心主体。
+  依据 arXiv:2101.04051（H2V：主体选择 → 主体保持式裁剪）。
+  几何计算在 hailuo_video.crop（包内，可测），这里只负责传参。
+
 调用方：
   import sys; sys.path.insert(0, 'scripts')
   from lib_ffmpeg import apply_cinematic_lut, to_vertical, concat_files
@@ -28,6 +34,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import imageio_ffmpeg
+
+# V3.8 W5：几何计算复用包内 hailuo_video.crop（scripts 目录不在包路径上，
+# 按仓库既有惯例把 sandbox/ 插进 sys.path）。
+_SANDBOX = Path(__file__).resolve().parents[1] / "sandbox"
+if str(_SANDBOX) not in sys.path:
+    sys.path.insert(0, str(_SANDBOX))
+
+from hailuo_video.crop import SubjectBox, compute_crop_window  # noqa: E402
 
 
 # ---------- LUT 配方（V3.2 暖色 / 冷色，6 镜） ----------
@@ -173,17 +187,26 @@ def to_vertical(
     target: tuple[int, int] = (1080, 1920),
     *,
     anchor: str = "center",
+    crop_frac: float | None = None,
+    subject_box: tuple[int, int, int, int] | SubjectBox | None = None,
 ) -> Path:
     """16:9 (1920x1080) → 9:16 竖屏。
 
-    实现：scale -1:H（保比例放大到目标高度）→ crop center WxH
+    实现：scale -1:H（保比例放大到目标高度）→ crop WxH
     副作用：左右两侧 ~ 800px 被裁（主体应居中；偏离主体时不建议用）
+
+    V3.8 W5：新增**主体感知裁剪**（依据 arXiv:2101.04051 H2V）。
+      - `subject_box`（源像素坐标 x0,y0,x1,y1）→ 裁剪窗口罩住主体。
+      - `crop_frac`（0=最左，0.5=居中，1=最右）→ 通用化旧的三档 anchor。
+      - 两者都不给 → 行为与旧版**完全一致**（向后兼容）。
 
     Args:
         input_mp4: 输入 16:9 横屏
         output_mp4: 输出 9:16 路径
         target: (W, H) 默认 (1080, 1920)
         anchor: 裁剪锚点 "center"（默认）| "left" | "right"
+        crop_frac: 水平位置比例 0..1（优先于 anchor）
+        subject_box: 主体包围盒（源像素坐标）
 
     Returns:
         output_mp4 Path
@@ -195,16 +218,18 @@ def to_vertical(
     src_res = probe_resolution(input_mp4) or (1920, 1080)
     src_w, src_h = src_res
 
-    # scale -1:H → 高度适配 H，宽屏宽 = src_w * H/src_h
-    # 例如 src 1920x1080 → H=1920 → 3419x1920
-    scaled_w = src_w * target_h // src_h
-    crop_x = (scaled_w - target_w) // 2  # 默认 center
-    if anchor == "left":
-        crop_x = 0
-    elif anchor == "right":
-        crop_x = scaled_w - target_w
+    box: SubjectBox | None = None
+    if subject_box is not None:
+        if isinstance(subject_box, SubjectBox):
+            box = subject_box
+        else:
+            box = SubjectBox(*subject_box)
 
-    vf = f"scale=-1:{target_h},crop={target_w}:{target_h}:{crop_x}:0"
+    window = compute_crop_window(
+        src_w, src_h, target_w, target_h,
+        subject_box=box, anchor=anchor, crop_frac=crop_frac,
+    )
+    vf = window.filter_expr
 
     cmd = [
         _ffmpeg_exe(), "-y",
@@ -225,7 +250,8 @@ def to_vertical(
 class ConcatResult:
     output_path: Path
     clip_count: int
-    duration_seconds: float
+    duration_seconds: float        # V3.8：产物**视频时长**（探针读回）
+    elapsed_seconds: float = 0.0   # V3.8：墙钟耗时（拼接命令跑了多久）
 
 
 def concat_files(
@@ -261,10 +287,21 @@ def concat_files(
     if cleanup_list:
         list_file.unlink(missing_ok=True)
 
+    elapsed = time.monotonic() - started
+    # V3.8 缺陷 12：旧实现把**墙钟耗时**写进 duration_seconds —— 拼接一个 40.5s 的片子
+    # 会报 0.18s（那只是 ffmpeg 命令跑了多久）。字段名承诺的是"视频时长"，
+    # 现在用 probe_duration 读回产物真实时长，墙钟耗时另存 elapsed_seconds。
+    duration = 0.0
+    if output_mp4.is_file():
+        try:
+            duration = probe_duration(output_mp4)
+        except Exception:
+            duration = 0.0
     return ConcatResult(
         output_path=output_mp4,
         clip_count=len(mp4_list),
-        duration_seconds=time.monotonic() - started,
+        duration_seconds=duration,
+        elapsed_seconds=elapsed,
     )
 
 

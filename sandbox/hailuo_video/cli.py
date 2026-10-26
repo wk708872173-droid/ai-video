@@ -21,6 +21,7 @@ V2.5（端到端 pipeline）：
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -267,12 +268,13 @@ def cmd_script(args: argparse.Namespace) -> int:
 
     # 选 backend
     if args.backend == "mock":
-        backend = se.make_backend("mock")
-        print("[SCRIPT] backend=mock（单测模式，不会调真 LLM）", file=sys.stderr)
+        backend = se.make_backend("cli-mock")
+        print("[SCRIPT] backend=mock（mock 模式，不会调真 LLM）", file=sys.stderr)
     elif args.backend == "minimax":
         if not se.is_llm_configured():
             print(
-                "[FAIL] MINIMAX_API_KEY 未设置或长度不足。先在 .env 填好，或用 --backend mock 跑通流程。",
+                "[FAIL] MINIMAX_API_KEY 未设置或长度不足。先在 .env 填好后重试；"
+                "或用 --backend mock 跑通流程（不调真 API）。",
                 file=sys.stderr,
             )
             return 2
@@ -314,7 +316,11 @@ def cmd_image(args: argparse.Namespace) -> int:
         print("[FAIL] prompt 为空", file=sys.stderr)
         return 1
 
-    warns = ie.configuration_warnings()
+    warns = (
+        ie.gemini_configuration_warnings()
+        if args.backend == "gemini"
+        else ie.configuration_warnings()
+    )
     if warns:
         print("[IMAGE] 配置警告：", file=sys.stderr)
         for w in warns:
@@ -323,21 +329,19 @@ def cmd_image(args: argparse.Namespace) -> int:
     if args.backend == "mock":
         backend = ie.make_backend("mock")
         print("[IMAGE] backend=mock（单测模式，不会调真 API）", file=sys.stderr)
-    elif args.backend == "minimax":
-        if not ie.is_image_configured():
-            print(
-                "[FAIL] MINIMAX_API_KEY 未设置或长度不足。先在 .env 填好，或用 --backend mock。",
-                file=sys.stderr,
-            )
-            return 2
+    elif args.backend == "minimax" and not ie.is_image_configured():
+        print(
+            "[FAIL] MINIMAX_API_KEY 未设置或长度不足。先在 .env 填好，或用 --backend mock。",
+            file=sys.stderr,
+        )
+        return 2
+    else:
+        # gemini / minimax 都走工厂，构造期缺 Key 会抛 ImageError
         try:
-            backend = ie.make_backend("minimax")
+            backend = ie.make_backend(args.backend)
         except ie.ImageError as exc:
             print(f"[FAIL] {exc}", file=sys.stderr)
             return 2
-    else:
-        print(f"[FAIL] 未知 backend: {args.backend}", file=sys.stderr)
-        return 2
 
     n = max(1, args.n)
     out_path = Path(args.output)
@@ -665,9 +669,40 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         keep_intermediate=args.keep_intermediate,
         parallel=args.parallel,
         motion_budget=args.motion_budget,
+        aspect_ratio=getattr(args, "aspect_ratio", None),
+        knowledge_path=getattr(args, "knowledge_path", None),
         run_dir=args.run_dir,
         resume_from=getattr(args, "resume_from", None),
     )
+
+    # V3.8 缺陷 2：static 降级镜头必须显式告知（旧行为完全静默）。
+    static_skipped = (result.consistency or {}).get("static_skipped_shots") or []
+    if static_skipped:
+        print(
+            f"[WARN] {len(static_skipped)} 个镜头 motion_complexity=static → 走 Ken Burns 兜底"
+            f"（无真 AI 运动、不消耗 Hailuo quota）：shot {static_skipped}",
+            file=sys.stderr,
+        )
+    # V3.8 缺陷 13：registry 落盘失败不再静默。
+    registry_err = (result.consistency or {}).get("registry_save_error")
+    if registry_err:
+        print(f"[WARN] registry.json 落盘失败（续跑信息缺失）：{registry_err}", file=sys.stderr)
+    # V3.8 W1：过期 reference 被跳过 → 角色一致性锚定缺失，必须显式告知。
+    stale_refs = (result.consistency or {}).get("stale_references") or []
+    if stale_refs:
+        labels = ", ".join(f"shot{r['shot_idx']}:{r['label']}" for r in stale_refs)
+        print(
+            f"[WARN] {len(stale_refs)} 条 reference 已过期被跳过（角色一致性锚定缺失）：{labels}",
+            file=sys.stderr,
+        )
+    # V3.8 W3：跨镜连续性门禁（默认只报警不阻断）。
+    cont = (result.consistency or {}).get("continuity") or {}
+    if cont and not cont.get("ok", True):
+        print(
+            f"[WARN] 跨镜连续性未达标：mean 色差相似度 {cont.get('mean_similarity', 0):.3f}"
+            f"（门禁 0.90；日记实测 0.700 / 理想基线 0.95）",
+            file=sys.stderr,
+        )
 
     if not result.ok:
         print(f"[FAIL] {result.error}", file=sys.stderr)
@@ -858,8 +893,8 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--aspect-ratio", default=None, help="宽高比 16:9 / 1:1 等（默认 env）")
     i.add_argument("--response-format", choices=["base64", "url"], default=None,
                    help="响应格式（默认 env；base64 推荐无过期）")
-    i.add_argument("--backend", choices=["minimax", "mock"], default="minimax",
-                   help="后端（minimax=真实，mock=单测假数据；默认 minimax）")
+    i.add_argument("--backend", choices=["minimax", "gemini", "mock"], default="minimax",
+                   help="后端（minimax/gemini=真实，mock=单测假数据；默认 minimax）")
     i.set_defaults(func=cmd_image)
 
     t = sub.add_parser("tts", help="text → Edge-TTS mp3（+ 可选字幕）")
@@ -888,8 +923,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("pipeline", help="storyboard.json → final.mp4（端到端 MVP）")
     p.add_argument("storyboard", help="storyboard.json（来自 script 子命令）")
     p.add_argument("-o", "--output", required=True, help="最终 mp4 输出路径")
-    p.add_argument("--image-backend", choices=["minimax", "mock"], default="minimax",
-                   help="图像后端（默认 minimax；mock 不调真 API）")
+    p.add_argument("--image-backend", choices=["minimax", "gemini", "mock"], default="minimax",
+                   help="图像后端（默认 minimax；gemini=Nano Banana；mock 不调真 API）")
     p.add_argument("--tts-backend", choices=["edge", "mock"], default="edge",
                    help="TTS 后端（默认 edge；mock 不调真 API）")
     p.add_argument("--voice", default="zh-CN-XiaoxiaoNeural", help="TTS voice 名")
@@ -898,6 +933,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--video-effect", default="cycle",
                    help="视频 Ken Burns 效果：cycle / zoom_in / zoom_out / pan_left / pan_right / pan_up / pan_down / static")
     p.add_argument("--assets-dir", default="./assets", help="V2.5 物料目录（默认 ./assets；与 prep 共用）")
+    # V3.8 缺陷 1：pipeline 子命令此前**没有** --aspect-ratio，
+    #   画幅被硬编码成 16:9 → 竖屏（小红书 9:16）在生产路径不可达。
+    #   不传 = 由 backend 读自己的 env（MINIMAX_IMAGE_ASPECT_RATIO / GEMINI_IMAGE_ASPECT_RATIO）。
+    p.add_argument("--aspect-ratio", default=None,
+                   help="画幅 16:9 / 9:16 / 1:1 等（默认取 backend 的 env，再退 16:9）")
     p.add_argument("--skip-asset-prep", action="store_true", help="V2.5 跳过 Phase 0（已 prep 过可复用缓存）")
     p.add_argument("--keep-intermediate", action="store_true", help="保留中间产物")
     p.add_argument("--parallel", type=int, default=1,
@@ -906,6 +946,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="V3.1 真 AI 视频生成 budget（MiniMax Max 默认 3 hailuo-2.3/天；超额 fallback Ken Burns）")
     p.add_argument("--run-dir", default="./run",
                    help="V3.0 run 目录（log.jsonl + registry.json；默认 ./run）")
+    # V3.8 W4：运动参数知识库（REQ-406）。默认**不记录** —— 写库是副作用，
+    #   显式传路径才开启（避免污染人工维护的 knowledge/motion_params.json）。
+    p.add_argument("--knowledge-path", default=None,
+                   help="运动参数知识库 JSON 路径（如 knowledge/motion_params.json；默认不记录）")
     p.add_argument("--dry-run", action="store_true",
                    help="V3.0 仅打印 DAG 后退出（不调任何 API）")
     p.add_argument("--resume-from", default=None,
@@ -916,8 +960,8 @@ def build_parser() -> argparse.ArgumentParser:
     pp = sub.add_parser("prep", help="V2.5 Phase 0：只生成 character sheet（缓存到 assets/）")
     pp.add_argument("storyboard", help="storyboard.json")
     pp.add_argument("--assets-dir", default="./assets", help="素材目录（默认 ./assets）")
-    pp.add_argument("--image-backend", choices=["minimax", "mock"], default="minimax",
-                    help="图像后端（默认 minimax）")
+    pp.add_argument("--image-backend", choices=["minimax", "gemini", "mock"], default="minimax",
+                    help="图像后端（默认 minimax；gemini=Nano Banana）")
     pp.add_argument("--force", action="store_true", help="强制重新生成（忽略缓存）")
     pp.set_defaults(func=cmd_prep)
 
@@ -948,6 +992,18 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("validate", help="V2.6：校验 storyboard.json schema + 引用一致性")
     v.add_argument("storyboard", help="storyboard.json")
     v.set_defaults(func=cmd_validate)
+
+    # V3.8 W6：VLM 画面评审（默认 mock —— 零网络调用）
+    rv = sub.add_parser("review", help="V3.8：VLM 画面评审（默认 mock；真 API 需 --enable-real）")
+    rv.add_argument("images", nargs="*", help="待评审的图片（按时间顺序）")
+    rv.add_argument("--backend", choices=["mock", "gemini"], default="mock",
+                    help="评审后端（默认 mock；gemini 需 --enable-real + GEMINI_VLM_MODEL）")
+    rv.add_argument("--enable-real", action="store_true",
+                    help="允许调用真 API（默认关闭，避免意外计费）")
+    rv.add_argument("--context", default="",
+                    help="评审上下文（分镜描述 / 旁白 / 角色设定），会进 prompt")
+    rv.add_argument("--output", default=None, help="评审报告 JSON 输出路径")
+    rv.set_defaults(func=cmd_review)
 
     ca = sub.add_parser("check-assets", help="V2.6：列出 storyboard 所需但 assets/ 还没的 reference sheets")
     ca.add_argument("storyboard", help="storyboard.json")
@@ -1009,6 +1065,51 @@ def cmd_consistency_check(args: argparse.Namespace) -> int:
     rep = quality.compute_color_consistency(shot_paths)
     print(rep.format(), file=sys.stderr)
     return 0 if rep.ok else 1
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """V3.8 W6：VLM 画面评审（默认 mock —— 零网络调用、零计费）。
+
+    真 API（Gemini VLM）需 **同时**满足：`--backend gemini` + `--enable-real`
+    + env `GEMINI_API_KEY` + env `GEMINI_VLM_MODEL`。
+    缺任一项 → 显式报错（鉴权域硬失败，**不静默退回 mock**）。
+    """
+    from hailuo_video import vlm_review as vr
+
+    images = [str(p) for p in (args.images or [])]
+    if not images:
+        print("[FAIL] 至少给一张图", file=sys.stderr)
+        return 2
+    missing = [p for p in images if not Path(p).is_file()]
+    if missing:
+        print(f"[FAIL] 图片不存在：{missing[:3]}", file=sys.stderr)
+        return 2
+
+    try:
+        reviewer = vr.make_reviewer(args.backend, enable_real=args.enable_real)
+    except vr.VLMReviewError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        report = reviewer.review(images, context=args.context or "")
+    except vr.VLMReviewError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"[FAIL] 评审异常：{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    print(report.format(), file=sys.stderr)
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[OK] review report → {out}", file=sys.stderr)
+    return 0 if report.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:

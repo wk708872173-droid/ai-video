@@ -20,14 +20,17 @@ from hailuo_video import script_engine as se  # noqa: E402
 # ---------- 工具 ----------
 
 def _make_image_backend_with_url(url: str = "https://fake.example.com/char.jpg") -> ie.MockImageBackend:
-    """造一个返回 url 模式 bytes（fake bytes + 1 个 url）的 backend。"""
+    """造一个 url 模式 backend：只给 image_url，不给 bytes。
+
+    贴近 MiniMax `response_format=url` 的真实返回——那种模式下响应里没有
+    字节，必须下载。有 bytes 又带 url 的组合现实中不存在，asset_prep.fetch_bytes
+    会优先用 bytes 而不发起下载。
+    """
     backend = ie.MockImageBackend()
-    # 改写 generate 返回 url 而不是 base64
-    fake_bytes = b"\xff\xd8\xff fake jpeg 1KB" * 50  # ~600 bytes
 
     def fake_generate(prompt, **opts):
         return [ie.ImageResult(
-            bytes=fake_bytes,
+            bytes=b"",
             mime_type="image/jpeg",
             prompt=prompt,
             model="image-01",
@@ -35,6 +38,26 @@ def _make_image_backend_with_url(url: str = "https://fake.example.com/char.jpg")
             n=1,
             duration_seconds=0.0,
             image_url=[url],
+        )]
+    backend.generate = fake_generate  # type: ignore
+    return backend
+
+
+def _make_image_backend_bytes_only(nbytes: bytes = b"\x89PNG\r\n\x1a\n fake") -> ie.MockImageBackend:
+    """造一个 base64-only backend：有 bytes、无 image_url（Gemini 形态）。"""
+    backend = ie.MockImageBackend()
+
+    def fake_generate(prompt, **opts):
+        return [ie.ImageResult(
+            bytes=nbytes,
+            mime_type="image/png",
+            prompt=prompt,
+            model="gemini-2.5-flash-image",
+            aspect_ratio="1:1",
+            n=1,
+            duration_seconds=0.0,
+            image_base64=[base64.b64encode(nbytes).decode("ascii")],
+            image_url=[],
         )]
     backend.generate = fake_generate  # type: ignore
     return backend
@@ -328,23 +351,55 @@ def test_generate_character_sheet_url_download_failure(tmp_path, monkeypatch):
         assert "下载 url 失败" in r.error
 
 
-def test_generate_character_sheet_no_url_in_response(tmp_path):
-    """V2.5：response 没返回 image_url → 3 角度都返回 error result。"""
+def test_generate_character_sheet_base64_only_backend_succeeds(tmp_path):
+    """Gemini 形态：有 bytes、无 image_url → 正常落盘，url 为空串。"""
+    png = b"\x89PNG\r\n\x1a\n gemini fake"
+    backend = _make_image_backend_bytes_only(png)
+
+    ch = se.Character(name="x", appearance="x", personality=[], color_palette=[])
+    result = ap.generate_character_sheet(ch, backend, assets_dir=tmp_path)
+    for angle, r in result.items():
+        assert r.ok, f"{angle} 应该成功：{r.error}"
+        assert r.url == ""
+        assert r.url_expires_at == ""
+        assert ap.character_angle_path("x", angle, tmp_path).read_bytes() == png
+
+
+def test_generate_character_sheet_base64_only_writes_empty_url_sidecar(tmp_path):
+    """防重复计费的关键回归：`.url.txt` 仍必须写（可为空）。
+
+    has_cached_character_angle 要求 .jpg 与 .url.txt 同时存在才算缓存命中，
+    不写 → 每次 prep 都重新生成（Gemini 约 $0.039/张）。
+    """
+    backend = _make_image_backend_bytes_only()
+
+    ch = se.Character(name="x", appearance="x", personality=[], color_palette=[])
+    ap.generate_character_sheet(ch, backend, assets_dir=tmp_path)
+    for angle in ap.DEFAULT_ANGLES:
+        assert ap.character_angle_url_path("x", angle, tmp_path).is_file()
+        assert ap.has_cached_character_angle("x", angle, tmp_path) is True
+    # 第二轮应全部命中缓存（不调 API）
+    result = ap.generate_character_sheet(ch, backend, assets_dir=tmp_path)
+    assert all(r.source == "cached" for r in result.values())
+
+
+def test_generate_character_sheet_result_without_any_payload_errors(tmp_path):
+    """既无 bytes 也无 base64/url → 显式报错（R4：不静默产出 0 张资产）。"""
     backend = ie.MockImageBackend()
 
     def fake_generate(prompt, **opts):
         return [ie.ImageResult(
-            bytes=b"x", mime_type="image/jpeg", prompt=prompt, model="image-01",
+            bytes=b"", mime_type="image/jpeg", prompt=prompt, model="gemini-2.5-flash-image",
             aspect_ratio="1:1", n=1, duration_seconds=0.0,
-            image_url=[],   # 空 url
+            image_url=[], image_base64=[],
         )]
-    backend.generate = fake_generate
+    backend.generate = fake_generate  # type: ignore
 
     ch = se.Character(name="x", appearance="x", personality=[], color_palette=[])
     result = ap.generate_character_sheet(ch, backend, assets_dir=tmp_path)
     for angle, r in result.items():
         assert not r.ok
-        assert "image_url" in r.error
+        assert "既无 bytes" in r.error
 
 
 # ---------- prepare_all_characters ----------
@@ -434,3 +489,108 @@ def test_minimax_generate_no_subject_reference_when_none(tmp_path, monkeypatch):
     backend.generate("test", subject_reference=None)
     assert "subject_references" not in captured["body"]
     assert "prompt_optimizer" not in captured["body"]
+
+# ---------- fetch_bytes ----------
+
+def test_fetch_bytes_prefers_existing_bytes():
+    r = ie.ImageResult(bytes=b"raw", image_base64=["eA=="], image_url=["https://e.com/a"])
+    assert ap.fetch_bytes(r) == b"raw"
+
+
+def test_fetch_bytes_decodes_image_base64():
+    r = ie.ImageResult(bytes=b"", image_base64=[base64.b64encode(b"decoded").decode()])
+    assert ap.fetch_bytes(r) == b"decoded"
+
+
+def test_fetch_bytes_downloads_url(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen_factory(b"downloaded"))
+    r = ie.ImageResult(bytes=b"", image_url=["https://e.com/a.jpg"])
+    assert ap.fetch_bytes(r) == b"downloaded"
+
+
+def test_fetch_bytes_download_failure_raises(monkeypatch):
+    def boom(url, timeout=None):
+        raise OSError("nope")
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    r = ie.ImageResult(bytes=b"", image_url=["https://e.com/a.jpg"])
+    with pytest.raises(ie.ImageError, match="下载 url 失败"):
+        ap.fetch_bytes(r)
+
+
+def test_fetch_bytes_empty_result_raises():
+    """R4：空结果必须报错，不能静默写出 0 字节文件。"""
+    with pytest.raises(ie.ImageError, match="既无 bytes"):
+        ap.fetch_bytes(ie.ImageResult(bytes=b""))
+
+
+# ---------- _read_cached_url 回退 ----------
+
+def test_read_cached_url_without_fallback_keeps_http_only(tmp_path):
+    """image_path=None 时行为与 V2.5 完全一致（零回归）。"""
+    p = tmp_path / "front.url.txt"
+    p.write_text("garbage", encoding="utf-8")
+    assert ap._read_cached_url(p) == ""
+
+
+def test_read_cached_url_prefers_http_url(tmp_path):
+    p = tmp_path / "front.url.txt"
+    p.write_text("https://e.com/a.jpg", encoding="utf-8")
+    img = tmp_path / "front.jpg"
+    img.write_bytes(b"x")
+    assert ap._read_cached_url(p, img) == "https://e.com/a.jpg"   # URL 优先
+
+
+def test_read_cached_url_falls_back_to_sibling_image(tmp_path):
+    """Gemini 缓存：.url.txt 是空串 → 回退本地图片路径。"""
+    p = tmp_path / "front.url.txt"
+    p.write_text("", encoding="utf-8")
+    img = tmp_path / "front.jpg"
+    img.write_bytes(b"x")
+    assert ap._read_cached_url(p, img) == str(img)
+
+
+def test_read_cached_url_returns_empty_when_no_image(tmp_path):
+    p = tmp_path / "front.url.txt"
+    p.write_text("", encoding="utf-8")
+    assert ap._read_cached_url(p, tmp_path / "front.jpg") == ""
+
+
+# ---------- resolve_shot_reference_urls（本地 ref） ----------
+
+def _prep_local_assets(assets_dir: Path, name: str = "农夫") -> None:
+    """造一份 Gemini 形态的缓存：只有 .jpg，.url.txt 为空串。"""
+    sub = ap.character_subdir(name, assets_dir)
+    sub.mkdir(parents=True, exist_ok=True)
+    for angle in ap.DEFAULT_ANGLES:
+        ap.character_angle_path(name, angle, assets_dir).write_bytes(b"\xff\xd8 img")
+        ap.character_angle_url_path(name, angle, assets_dir).write_text("")
+
+
+def test_resolve_shot_reference_urls_returns_local_paths(tmp_path):
+    _prep_local_assets(tmp_path)
+    shot = se.Shot(index=1, shot_id="s1", scene_id=1, characters=["农夫"],
+                   shot_type="近景", description="d", mood=[], camera_motion="")
+    refs = ap.resolve_shot_reference_urls(shot, tmp_path)
+    assert refs.urls, "本地缓存应能解析出 reference"
+    assert all(str(ap.character_subdir("农夫", tmp_path)) in u for u in refs.urls)
+    assert all(not u.startswith(("http://", "https://")) for u in refs.urls)
+
+
+def test_resolve_shot_reference_urls_prefers_url_when_cached(tmp_path):
+    """回归：有 URL 时仍返回 URL（存量 MiniMax 缓存不受影响）。"""
+    _prep_local_assets(tmp_path)
+    ap.character_angle_url_path("农夫", "front", tmp_path).write_text(
+        "https://e.com/front.jpg", encoding="utf-8"
+    )
+    shot = se.Shot(index=1, shot_id="s1", scene_id=1, characters=["农夫"],
+                   shot_type="近景", description="d", mood=[], camera_motion="")
+    refs = ap.resolve_shot_reference_urls(shot, tmp_path)
+    assert "https://e.com/front.jpg" in refs.urls
+
+
+def test_resolve_shot_reference_urls_respects_cap_with_local_paths(tmp_path):
+    _prep_local_assets(tmp_path)
+    shot = se.Shot(index=1, shot_id="s1", scene_id=1, characters=["农夫", "兔子", "农夫2"],
+                   shot_type="近景", description="d", mood=[], camera_motion="")
+    refs = ap.resolve_shot_reference_urls(shot, tmp_path)
+    assert len(refs.urls) <= ap.MAX_SUBJECT_REFERENCES

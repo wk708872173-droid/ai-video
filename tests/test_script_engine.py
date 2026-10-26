@@ -11,6 +11,7 @@ SANDBOX = Path(__file__).resolve().parents[1] / "sandbox"
 if str(SANDBOX) not in sys.path:
     sys.path.insert(0, str(SANDBOX))
 
+from hailuo_video import pipeline as pl  # noqa: E402
 from hailuo_video import script_engine as se  # noqa: E402
 
 
@@ -445,26 +446,26 @@ def test_is_llm_configured_requires_key():
     assert se.is_llm_configured() is False
 
 
-def test_is_llm_configured_requires_min_key_length():
+def test_is_llm_configured_requires_min_key_length(monkeypatch):
     import os
-    os.environ["MINIMAX_API_KEY"] = "short"
+    monkeypatch.setenv('MINIMAX_API_KEY', "short")
     assert se.is_llm_configured() is False
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
     assert se.is_llm_configured() is True
 
 
-def test_configuration_warnings_empty_when_clean():
+def test_configuration_warnings_empty_when_clean(monkeypatch):
     """未设 Key 时有警告。"""
     import os
-    os.environ["MINIMAX_API_KEY"] = "x" * 20
+    monkeypatch.setenv('MINIMAX_API_KEY', "x" * 20)
     warns = se.configuration_warnings()
     # Key OK，但 base_url 是默认 → 警告有
     assert any("端点未公开核实" in w for w in warns)
 
 
-def test_configuration_warnings_short_key():
+def test_configuration_warnings_short_key(monkeypatch):
     import os
-    os.environ["MINIMAX_API_KEY"] = "abc"
+    monkeypatch.setenv('MINIMAX_API_KEY', "abc")
     warns = se.configuration_warnings()
     assert any("长度" in w for w in warns)
 
@@ -512,8 +513,17 @@ def test_cli_script_empty_file(capsys, tmp_path):
     assert "为空" in err
 
 
-def test_cli_script_mock_backend_without_preset_fails(monkeypatch, tmp_path, capsys):
-    """MockBackend 没预设响应时跑 cmd_script → 期望非 0 + 错误信息。"""
+def test_cli_script_mock_backend_now_succeeds(monkeypatch, tmp_path, capsys):
+    """`--backend mock` 现在真能跑通（走 CliMockBackend 的 canned 响应）。
+
+    ⚠️ 本测试**替换**了原 `test_cli_script_mock_backend_without_preset_fails`
+    —— 后者断言 rc==1 + "MockBackend 无预设响应"，即把 D1 的缺陷当成了预期行为。
+    那条断言在修复前并不算「写错」：当时 cmd_script 确实走 se.make_backend("mock")
+    → 严格 MockBackend → 必然 AssertionError。但那是缺陷不是契约，故改为断言修复后
+    的正确行为，而非删掉断言换绿。严格语义本身未动，护栏见
+    tests/test_cli_mock_script.py::test_mock_backend_still_raises_on_unregistered_prompt。
+    提案：docs/drafts/script_mock_backend_draft.md
+    """
     novel = tmp_path / "novel.txt"
     novel.write_text("从前有个少年...", encoding="utf-8")
     out = tmp_path / "sb.json"
@@ -524,9 +534,9 @@ def test_cli_script_mock_backend_without_preset_fails(monkeypatch, tmp_path, cap
         "--shots", "5",
     ])
     err = capsys.readouterr().err
-    assert rc == 1
-    assert "pipeline 失败" in err
-    assert "AssertionError" in err or "MockBackend" in err
+    assert rc == 0, err
+    assert out.exists()
+    assert len(pl.load_storyboard(out).shots) == 5
 
 
 def test_cli_script_mock_with_preset(monkeypatch, tmp_path, capsys):

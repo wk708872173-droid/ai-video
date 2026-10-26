@@ -220,31 +220,84 @@ class ImageGenAgent(Agent):
             return AgentResult(ok=False, error="image_backend missing")
         if not prompt:
             return AgentResult(ok=False, error="prompt empty")
-        refs_for_backend = self._reference_urls(task)
+        refs_for_backend = self._reference_urls(task, backend)
         try:
             results = backend.generate(
                 prompt,
-                aspect_ratio_value=task.get("aspect_ratio", "16:9"),
+                aspect_ratio_value=self._resolve_aspect_ratio(task, backend),
                 subject_reference=refs_for_backend,
+                # V3.8 W4：负提示词（后端不支持独立字段时内联进 prompt）
+                negative_prompt=str(task.get("negative_prompt", "") or ""),
             )
             # V3.2 自动开发冲刺（轮 6）：把 bytes 落盘到 intermediate_dir，
             # artifact.path 用文件路径（之前直接传 bytes 给 compute_content_hash 抛 TypeError）。
             artifacts = []
             inter_dir = task.get("intermediate_dir")
+            shot_idx = task.get("shot_idx")
             for idx, r in enumerate(results):
-                img_path = self._save_image_bytes(r, idx, inter_dir)
+                img_path = self._save_image_bytes(r, idx, inter_dir, shot_idx=shot_idx)
                 artifacts.append(Artifact(
-                    artifact_id=f"image_{idx}",
+                    artifact_id=self._image_artifact_id(shot_idx, idx),
                     kind="image",
                     path=img_path,
                     producer=self.name,
-                    metadata={"model": r.model, "duration": r.duration_seconds, "shot_idx": task.get("shot_idx")},
+                    metadata={"model": r.model, "duration": r.duration_seconds, "shot_idx": shot_idx},
                 ))
             return AgentResult(ok=True, artifacts=artifacts, metadata={"results": results})
         except Exception as exc:
             return AgentResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
-    def _save_image_bytes(self, r, idx, inter_dir) -> Path:
+    @staticmethod
+    def _image_artifact_id(shot_idx: Any, idx: int) -> str:
+        """V3.8 缺陷 15：artifact_id 必须按 shot 隔离。
+
+        旧实现恒为 f"image_{idx}"。n=1 时**每个 shot 都是 "image_0"**，而
+        `Registry.add` 用 artifact_id 做 key（`self.artifacts[artifact.artifact_id] = artifact`）
+        → 后一个 shot 覆盖前一个；`by_kind` 因 id 去重也只剩一项。
+        后果：多镜 storyboard 里所有镜头共用最后一张图，
+        且 `_get_image_path_for_shot` 对非首镜永远落到"第一个可用图"兜底。
+
+        新规则：每个 shot 的首张图 = "image_{shot_idx}"；
+        同 shot 的第 2..n 张 = "image_{shot_idx}_v{idx}"（不撞名）。
+        无 shot_idx（直接单测 agent）→ 退回旧的 f"image_{idx}"。
+        """
+        if shot_idx is None:
+            return f"image_{idx}"
+        return f"image_{shot_idx}" if idx == 0 else f"image_{shot_idx}_v{idx}"
+
+    @staticmethod
+    def _image_stem(shot_idx: Any, idx: int) -> str:
+        """V3.8 缺陷 15：落盘文件名按 shot 隔离（与 _image_artifact_id 同规则）。"""
+        if shot_idx is None:
+            return f"image_{idx:03d}"
+        try:
+            base = int(shot_idx)
+        except (TypeError, ValueError):
+            return f"image_{idx:03d}"
+        return f"image_{base:03d}" if idx == 0 else f"image_{base:03d}_v{idx}"
+
+    @staticmethod
+    def _resolve_aspect_ratio(task: dict, backend: Any) -> str:
+        """V3.8 缺陷 1：画幅解析优先级 = task 显式值 > backend 自己的 env 默认 > "16:9"。
+
+        旧实现硬传 `task.get("aspect_ratio", "16:9")`，backend 的 env 默认永远轮不到，
+        导致 .env 的 MINIMAX_IMAGE_ASPECT_RATIO=9:16 在 V3 生产路径失效
+        （image_engine.default_aspect_ratio 读的就是这个 env）。
+        """
+        explicit = str(task.get("aspect_ratio") or "").strip()
+        if explicit:
+            return explicit
+        getter = getattr(backend, "default_aspect_ratio", None)
+        if callable(getter):
+            try:
+                value = getter()
+            except Exception:
+                value = ""
+            if value:
+                return str(value)
+        return "16:9"
+
+    def _save_image_bytes(self, r, idx, inter_dir, *, shot_idx: Any = None) -> Path:
         """V3.2 自动开发冲刺（轮 6）：把 ImageResult.bytes 落盘成文件。
 
         V3.2 自动开发冲刺（轮 15 修正）：如果 image_url 是 MiniMax OSS 公网 URL，
@@ -254,12 +307,15 @@ class ImageGenAgent(Agent):
         V3.2 自动开发冲刺（轮 15 修正 2）：inter_dir 是 Linux-style 路径（/tmp/...）
         时，Windows Python 会建到 cwd 下相对路径——但 artifact.path 仍存 Linux-style，
         导致 Path.exists() 返 False。用 .resolve() 强转绝对 Windows 路径。
+
+        V3.8 缺陷 15：文件名也必须按 shot 隔离，否则多镜 storyboard 里
+        每个 shot 都写同一个 image_000.jpg，后一个覆盖前一个。
         """
         from pathlib import Path as _P
         out_dir = _P(inter_dir).resolve() if inter_dir else _P("./intermediate").resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         ext = ".jpg" if "jpeg" in (r.mime_type or "jpeg") else ".png"
-        out_path = (out_dir / f"image_{idx:03d}{ext}").resolve()
+        out_path = (out_dir / f"{self._image_stem(shot_idx, idx)}{ext}").resolve()
 
         # 优先 image_url（MiniMax OSS 公网 URL）→ 下载到 inter_dir
         url_val = getattr(r, "image_url", None)
@@ -280,17 +336,25 @@ class ImageGenAgent(Agent):
         return str(out_path)
 
     @staticmethod
-    def _reference_urls(task: dict) -> list[str] | None:
-        """合并 subject_references 与 scene_references，只保留 http(s) URL，最多 4 个。
+    def _reference_urls(task: dict, image_backend: Any = None) -> list[str] | None:
+        """合并 subject_references 与 scene_references，最多 4 个。
 
         角色名（「橘猫」）不会传给 image-01。场景 URL 已在 subject 列表里时不重复追加。
+
+        reference 可能是 http(s) URL（MiniMax 缓存）或本地图片路径（Gemini 缓存）。
+        R4：backend 声明 supports_local_refs 时不做 http 过滤；不支持时维持原过滤，
+        交给 backend 显式报错——不在这里静默丢弃（那会让角色一致性无声消失）。
         """
         from hailuo_video.asset_prep import MAX_SUBJECT_REFERENCES
+
+        allow_local = bool(getattr(image_backend, "supports_local_refs", False))
 
         def _urls(value) -> list[str]:
             if not value:
                 return []
             items = [value] if isinstance(value, str) else list(value)
+            if allow_local:
+                return [item for item in items if isinstance(item, str) and item.strip()]
             return [
                 item for item in items
                 if isinstance(item, str) and item.startswith(("http://", "https://"))

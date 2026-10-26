@@ -4,14 +4,17 @@
 > 主角：奶黄中华田园犬幼犬
 > 用例：治愈系
 
-## ⭐ 当前推荐上传版本（2026-10-15 更新：V3.4 W3 + 幼犬命名 + Day 2 24h 闭环）
+## ⭐ 当前推荐上传版本（2026-10-16 更新：V3.5 Director + Day 3 友情扩展）
 
 | 文件 | 时长 | 分辨率 | 大小 | 说明 |
 |---|---|---|---|---|
-| `final/xiaohuang_9x16_xiaohongshu.mp4` | **17.50s** | **1080x1920** | 10.7 MB | **Day 1 小红书主推·竖屏** |
+| `final/xiaohuang_day3_9x16_xiaohongshu.mp4` | **17.50s** | **1080x1920** | 9.3 MB | **Day 3 小红书主推·竖屏（友情）** |
+| `final/xiaohuang_day3_16x9.mp4` | 17.50s | 1920x1080 | 10.4 MB | Day 3 横屏备用 |
+| `final/cover_day3_9x16.png` | — | 1080x1920 | 2.7 MB | Day 3 封面（奶黄+小黑·老宅门迎接） |
+| `final/xiaohuang_9x16_xiaohongshu.mp4` | 17.50s | 1080x1920 | 10.7 MB | Day 1 小红书主推·竖屏 |
 | `final/xiaohuang_16x9.mp4` | 17.50s | 1920x1080 | 10.8 MB | Day 1 横屏备用 |
 | `final/cover_9x16.png` | — | 1080x1920 | 1.7 MB | Day 1 封面（奶黄幼犬趴窗边） |
-| `final/xiaohuang_day2_9x16_xiaohongshu.mp4` | **17.50s** | **1080x1920** | 8.6 MB | **Day 2 主推·竖屏（24h 闭环）** |
+| `final/xiaohuang_day2_9x16_xiaohongshu.mp4` | 17.50s | 1080x1920 | 8.6 MB | Day 2 主推·竖屏（24h 闭环） |
 | `final/xiaohuang_day2_16x9.mp4` | 17.50s | 1920x1080 | 8.8 MB | Day 2 横屏备用 |
 | `final/cover_day2.png` | — | 1080x1920 | 1.8 MB | Day 2 封面（夕阳·石阶看落山） |
 
@@ -46,6 +49,8 @@ Day 3：上午→正午→黄昏（友情·2只狗狗·奶黄 + 邻居小黑）
 | 2026-10-13 | V3.4 W3 hotfix 尝试 | ❌ 浅色长毛猫（修复链路） | n/a | n/a | [archives/2026-10-13_v34_w3_attempts/](archives/2026-10-13_v34_w3_attempts/) |
 | 2026-10-13 | RECOVER v1 | n/a | ✅ | ✅ | [archives/2026-10-13_RECOVER_final/](archives/2026-10-13_RECOVER_final/) |
 | **2026-10-14** | **V3.4 W3 重跑（3 quota 全跑）** | **✅ 奶黄幼犬窗边** | **✅ 奶黄幼犬草地** | **✅ 棕白幼犬门口** | [archives/2026-10-14_v34_w3_rerun/](archives/2026-10-14_v34_w3_rerun/) |
+| **2026-10-15** | **V3.4 W3 Day 2（24h 闭环）** | **✅ 奶黄幼犬台阶** | **✅ 奶黄幼犬月夜** | **✅ 奶黄幼犬窗台·晨光** | [archives/2026-10-15_v34_w3_day2/](archives/2026-10-15_v34_w3_day2/) |
+| **2026-10-16** | **V3.5 Director Day 3（友情·2只狗）** | **✅ 奶黄+小黑同框** | **⚠️ 2 棕色（颜色合并）** | **⚠️ 2 棕白（颜色合并·构图完美）** | [archives/2026-10-16_v35_director_day3/](archives/2026-10-16_v35_director_day3/) |
 
 ## 🐛 "小黄变猫" 根因（V3.4 W3 + "幼犬" 命名已彻底修复）
 
@@ -100,6 +105,6 @@ cd sandbox && \
 ffmpeg -y -ss 1 -i sample/story_arc_xiaohuang_daily/_working/shot_001_rerun.mp4 \
   -frames:v 1 sample/story_arc_xiaohuang_daily/_working/shot_001_rerun_kf.png
 
-# 3) 如果是狗：re-concat → 替换 final/ 中的版本
-python scripts/_recover_xiaohuang.py --with-rerun
+# 3) 如果是狗：re-concat → 替换 final/ 中的版本（V3.7 统一脚本）
+PYTHONIOENCODING=utf-8 python scripts/finalize_with_fallback.py
 ```

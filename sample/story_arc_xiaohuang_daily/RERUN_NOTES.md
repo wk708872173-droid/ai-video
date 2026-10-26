@@ -55,8 +55,8 @@ ffmpeg -y -ss 1 -i \
 
 ### Step 4: 用 lib_ffmpeg 重拼最终版（覆盖 final/）
 ```bash
-# 一行命令搞定（V3.4 W3 hotfix 提供）
-PYTHONIOENCODING=utf-8 python scripts/_finalize_with_rerun.py
+# V3.7 统一脚本（合并旧 _finalize_with_rerun / _recover / _archive / _run_pipeline）
+PYTHONIOENCODING=utf-8 python scripts/finalize_with_fallback.py
 ```
 
 脚本自动做：

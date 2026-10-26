@@ -16,13 +16,14 @@ import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 from hailuo_video.local_client import PACKAGE_ROOT
 from hailuo_video.prompts import (
     CHARACTER_EXTRACTION_PROMPT,
     NOVEL_TO_SCRIPT_PROMPT,
     STORYBOARD_PROMPT,
+    render_storyboard_prompt,
 )
 # V3.5 Director 升级：白名单复用（prompts_director 是 leaf 模块，无循环 import 风险）
 from hailuo_video.prompts_director import (
@@ -47,6 +48,20 @@ _DOTENV_KEYS = (
     "MINIMAX_API_KEY",
     "MINIMAX_BASE_URL",
     "MINIMAX_MODEL",
+    # F3 修复（2026-10-22）：以下 4 个键此前只在 image_engine._DOTENV_KEYS 里列出，
+    # 而真正生效的 .env 加载白名单是本元组 —— 结果从 .env 配的这几项**从未生效**，
+    # 只有进程 env 才认。这是「文档/配置说明与实现不一致」的老毛病（同 D-018/D-019）。
+    "MINIMAX_IMAGE_MODEL",
+    "MINIMAX_IMAGE_RESPONSE_FORMAT",
+    "MINIMAX_IMAGE_ASPECT_RATIO",
+    "MINIMAX_IMAGE_N",
+    "GEMINI_API_KEY",
+    "GEMINI_BASE_URL",
+    "GEMINI_IMAGE_MODEL",
+    "GEMINI_IMAGE_ASPECT_RATIO",
+    "GEMINI_IMAGE_N",
+    # V3.8 W6：VLM 评审器用的多模态模型（与出图模型分开）
+    "GEMINI_VLM_MODEL",
 )
 
 DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"  # D-013 用户核实：CN 域
@@ -134,18 +149,44 @@ class Scene:
     dialogue: str = ""
     # V3.5 Director 升级：per-scene 起承转合（来自 LLM 的 scene 级别 narrative_beat）
     narrative_beat: str = ""
+    # F1 修复（2026-10-22）：这两个字段直通 SceneSpec（V2.5 scene sheet reference）。
+    # 此前 Storyboard.scenes 从未被 novel_to_storyboard 填充 → scene sheet 无从生成，
+    # 且 validate_storyboard 报 scene_undefined。默认值保证旧 payload 仍可解析。
+    atmosphere: str = ""
+    key_elements: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def to_scene_spec(self) -> "SceneSpec":
+        """转成 V2.5 scene sheet 用的 SceneSpec（字段语义不同，见 SceneSpec docstring）。
+
+        `time` 不进 SceneSpec：场景昼夜变体由 shot 侧的 `pick_scene_variant_for_time`
+        决定（asset_prep.resolve_shot_reference_urls），不在 scene reference 上。
+        """
+        return SceneSpec(
+            id=self.id,
+            location=self.location,
+            atmosphere=self.atmosphere,
+            key_elements=list(self.key_elements),
+        )
 
 
 @dataclass
 class Script:
     title: str
     scenes: list[Scene] = field(default_factory=list)
+    # F1 修复（2026-10-22）：随剧本同一次调用产出，不额外加 LLM 往返。
+    # 直通 Storyboard.style_anchor（V2.5 Layer 1）—— 此前该字段恒为空，
+    # 导致 validate 告警 + 下游出图缺画风基线（V3.2 轮 7 修过的老问题复发）。
+    style_anchor: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"title": self.title, "scenes": [s.to_dict() for s in self.scenes]}
+        return {
+            "title": self.title,
+            "scenes": [s.to_dict() for s in self.scenes],
+            "style_anchor": self.style_anchor,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Script":
@@ -168,10 +209,17 @@ class Script:
                     narrative_beat=_whitelist_or_empty(
                         s.get("narrative_beat", ""), NARRATIVE_BEAT_WHITELIST
                     ),
+                    # F1：直通 SceneSpec 的两个字段（旧 payload 无此键 → 取默认）
+                    atmosphere=str(s.get("atmosphere", "") or ""),
+                    key_elements=list(s.get("key_elements", []) or []),
                 ))
             except (TypeError, ValueError) as exc:
                 raise LLMError(f"scene 解析失败：{exc}") from exc
-        return cls(title=str(data.get("title", "")), scenes=scenes)
+        return cls(
+            title=str(data.get("title", "")),
+            scenes=scenes,
+            style_anchor=str(data.get("style_anchor", "") or ""),
+        )
 
 
 @dataclass
@@ -241,6 +289,12 @@ class Shot:
     bgm_cue: str = ""                       # 自由文本：背景音乐 / 音效提示
     narrative_beat: str = ""                # 起 / 承 / 转 / 合（per-shot 标签）
     emotion_arc_point: float = 0.0          # 0..1 紧张度曲线（0=平, 1=高潮）
+
+    # ---------- V3.8 W2：导演解耦（DramaDirector 式 static / dynamic） ----------
+    # 默认空串 → 旧 storyboard.json 仍可解析；旧 Shot(...) 构造仍合法。
+    static_visual: str = ""       # 静态视觉条件：角色外观 + 场景 + 构图 + 光线 → image prompt（首帧）
+    dynamic_narrative: str = ""   # 动态叙事条件：动作 + 运镜 + 情绪变化 → motion prompt（I2V）
+    color_lock: str = ""          # 色彩锁定：跨镜色基调（如 "warm-gold"）→ 连续性门禁 + 后期 LUT
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -375,6 +429,10 @@ class StoryArc:
                     "duration": s.expected_duration,
                     "motion_complexity": s.motion_complexity,
                     "continuity_from_prev": getattr(s, "continuity_from_prev", ""),
+                    # V3.8 W2：导演解耦字段（写出侧补齐 → round-trip 完整）
+                    "static_visual": getattr(s, "static_visual", ""),
+                    "dynamic_narrative": getattr(s, "dynamic_narrative", ""),
+                    "color_lock": getattr(s, "color_lock", ""),
                 }
                 for i, s in enumerate(self.shots)
             ],
@@ -453,6 +511,10 @@ def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
         narrative_beat=_whitelist_or_empty(
             s.get("narrative_beat", ""), NARRATIVE_BEAT_WHITELIST
         ),
+        # V3.8 W2：导演解耦字段（缺失 → 空串，向后兼容旧 storyboard.json）
+        static_visual=str(s.get("static_visual", "") or ""),
+        dynamic_narrative=str(s.get("dynamic_narrative", "") or ""),
+        color_lock=str(s.get("color_lock", "") or ""),
         emotion_arc_point=emotion_arc,
     )
 
@@ -565,6 +627,11 @@ def _parse_shots_payload(text: str, n_shots: int) -> list[Shot]:
 
         out.append(Shot(
             index=int(s.get("index", i + 1)),
+            # F2 修复（2026-10-22）：此前的 Shot 构造从不读 shot_id，导致
+            # LLM 产出的 storyboard 里 shot_id 恒为空 —— 而该字段自 V3.2 起就是
+            # trace ID（__init__.py 的 Shot 定义有它、prompt 也要求 LLM 输出它），
+            # 只是解析层漏了映射。下游 assets / registry 都按 shot_id 建目录。
+            shot_id=str(s.get("shot_id", "") or ""),
             scene_id=int(s.get("scene_id", 0)),
             shot_type=str(s.get("shot_type", "中景")),
             description=str(s.get("description", "")),
@@ -598,6 +665,10 @@ def _parse_shots_payload(text: str, n_shots: int) -> list[Shot]:
             narrative_beat=_whitelist_or_empty(
                 s.get("narrative_beat", ""), NARRATIVE_BEAT_WHITELIST
             ),
+            # V3.8 W2：导演解耦字段（LLM 不返也不报错）
+            static_visual=str(s.get("static_visual", "") or ""),
+            dynamic_narrative=str(s.get("dynamic_narrative", "") or ""),
+            color_lock=str(s.get("color_lock", "") or ""),
             emotion_arc_point=emotion_arc,
         ))
     if len(out) != n_shots:
@@ -634,6 +705,98 @@ class MockBackend(LLMBackend):
                 return v
         # 默认回退：让单测明显失败
         raise AssertionError(f"MockBackend 无预设响应（system[:80]={system[:80]!r}）")
+
+
+# CLI 专用 mock 的 canned 响应。按 system prompt 里的角色关键字分派。
+# 取值全部落在 quality/validation.py 的已知字典内（shot_type / camera_motion /
+# mood / time），故产出的 storyboard 能干净通过 validate_storyboard（无 warning）。
+_CLI_MOCK_SCRIPT = json.dumps({
+    "title": "井底之蛙（mock）",
+    "style_anchor": "documentary macro photography, Sony A1 + 90mm f/2.8, "
+                    "single shaft of daylight from above, Kodak Portra 800 film grain",
+    "scenes": [{
+        "id": 1,
+        "time": "白天",
+        "location": "浅井底部",
+        "characters": ["井蛙"],
+        "summary": "井蛙在井底仰望井口",
+        "dialogue": "天，就这么大。",
+        "narrative_beat": "起",
+        "atmosphere": "井口逆光，井壁湿冷青苔，微弱尘埃在光柱中浮动",
+        "key_elements": ["圆形井口天空", "井壁青苔", "井底浅水"],
+    }],
+}, ensure_ascii=False)
+
+# F1：画风锚定随剧本一起产出（见 Script.style_anchor → Storyboard.style_anchor）
+
+_CLI_MOCK_CHARACTERS = json.dumps({
+    "characters": [{
+        "name": "井蛙",
+        "appearance": "翠绿色青蛙，大而圆的眼睛鼓起，肚皮白净，四肢蹲坐",
+        "personality": ["自大", "无知"],
+        "color_palette": ["翠绿", "白", "墨黑"],
+    }],
+}, ensure_ascii=False)
+
+# 从分镜 prompt 里读回请求的镜头数（_parse_shots_payload 要求精确相等）
+_N_SHOTS_IN_PROMPT = re.compile(r"拆为\s*(\d+)\s*个分镜")
+
+_CLI_MOCK_SHOT = {
+    "scene_id": 1,
+    "shot_type": "中景",
+    "camera_motion": "zoom_in",
+    "description": "井底视角，翠绿青蛙蹲在浅水中仰头望向圆形井口，井口是唯一光源",
+    "subject_action": "青蛙跳跃一下，然后静止",
+    "characters": ["井蛙"],
+    "dialogue": "天，就这么大。",
+    "voiceover": "一口浅井里住着一只青蛙。",
+    "mood": ["平和"],
+    "expected_duration": 6,
+    "motion_complexity": "static",
+}
+
+
+class CliMockBackend(LLMBackend):
+    """CLI 用的 mock 后端：内置 canned 剧本/角色/分镜，`--backend mock` 可真跑通。
+
+    为什么不复用 `MockBackend`：后者「未匹配即抛 AssertionError」是**被单测依赖**的
+    设计（防止「忘了注册响应」的测试静默变绿）。给它加默认回退会破坏该保证。
+    所以这里另立一个带固定响应的实现，`MockBackend` 一行不动。
+
+    分镜数量从 prompt 里读（`_parse_shots_payload` 要求**精确**等于请求的 n_shots，
+    见 script_engine.py:609），构造参数只作兜底。
+
+    D1（docs/drafts/script_mock_backend_draft.md）：修复前 CLI 宣传该模式但
+    结构上必然抛 AssertionError，且 cli.py 的报错文案还在推荐它。
+    """
+
+    name: ClassVar[str] = "cli-mock"
+
+    def __init__(self, *, n_shots: int = 3) -> None:
+        self.calls: list[dict[str, str]] = []
+        self._n_shots = max(1, int(n_shots))
+
+    def chat(self, system: str, user: str, **opts: Any) -> str:
+        self.calls.append({"system": system, "user": user})
+        if "分镜师" in system:
+            m = _N_SHOTS_IN_PROMPT.search(user)
+            n = int(m.group(1)) if m else self._n_shots
+            shots = []
+            for i in range(max(1, n)):
+                shot = dict(_CLI_MOCK_SHOT)
+                shot["index"] = i + 1
+                # prompts.STORYBOARD_PROMPT:131 把 shot_id 列为必填
+                shot["shot_id"] = f"shot_{i + 1:03d}"
+                shots.append(shot)
+            return json.dumps({"shots": shots}, ensure_ascii=False)
+        if "角色设计师" in system:
+            return _CLI_MOCK_CHARACTERS
+        if "编剧" in system:
+            return _CLI_MOCK_SCRIPT
+        raise LLMError(
+            f"CliMockBackend 无对应 canned 响应（system[:80]={system[:80]!r}）；"
+            "若 pipeline 新增了 LLM 调用点，请在此补 canned 数据。"
+        )
 
 
 class MiniMaxChatBackend(LLMBackend):
@@ -830,12 +993,15 @@ class MiniMaxChatBackend(LLMBackend):
 
 def make_backend(prefer: str = "auto") -> LLMBackend:
     """按 prefer 选择后端：
-      - "mock"      → MockBackend（单测）
+      - "mock"      → MockBackend（单测专用：未注册响应即抛 AssertionError）
+      - "cli-mock"  → CliMockBackend（内置 canned 响应，供 CLI `--backend mock`）
       - "minimax"   → MiniMaxChatBackend（要求 API Key 已配）
       - "auto"      → 先 MiniMaxChatBackend，失败再回退（V2.1 不回退；硬失败）
     """
     if prefer == "mock":
         return MockBackend()
+    if prefer == "cli-mock":
+        return CliMockBackend()
     if prefer in ("minimax", "auto"):
         return MiniMaxChatBackend()
     raise LLMError(f"未知 backend: {prefer}")
@@ -878,20 +1044,52 @@ def script_to_storyboard(
     backend: LLMBackend,
     *,
     n_shots: int = 30,
+    director_mode: bool = False,
 ) -> list[Shot]:
     script_json = json.dumps(script.to_dict(), ensure_ascii=False, indent=2)
     chars_json = json.dumps([c.to_dict() for c in characters], ensure_ascii=False, indent=2)
-    user = _format_prompt(
-        STORYBOARD_PROMPT,
+    # V3.8 W2（缺陷 4）：此前直接用 STORYBOARD_PROMPT + str.replace，
+    #   于是 {three_beat_hint} / {camera_motion_whitelist} /
+    #   {motion_complexity_whitelist} / {prompt_70_30} 四个占位符**以字面花括号**
+    #   进了 LLM prompt —— 分镜提示词质量直接受损。
+    #   现在改调 render_storyboard_prompt（白名单 / 三拍 / 70-30 真正进入 prompt）。
+    user = render_storyboard_prompt(
         n_shots=n_shots,
         script_json=script_json,
         characters_json=chars_json,
+        director_mode=director_mode,
     )
     raw = backend.chat(
         system="你是漫剧分镜师，输出严格 JSON。",
         user=user,
     )
-    return _parse_shots_payload(raw, n_shots=n_shots)
+    shots = _parse_shots_payload(raw, n_shots=n_shots)
+    # V3.8 W2：导演解耦 —— 由已有 shot 数据确定性推导 static_visual /
+    #   dynamic_narrative / color_lock（**不新增 LLM 调用**；见 director.py）。
+    _apply_director_briefs(shots)
+    return shots
+
+
+def _apply_director_briefs(shots: list[Shot]) -> list[Shot]:
+    """给每个 shot 填 static_visual / dynamic_narrative / color_lock。
+
+    纯确定性推导（arXiv:2606.24107 DramaDirector 的 static/dynamic 解耦）。
+    shot 上已有值时**不覆盖**（尊重人工编辑过的 storyboard.json）。
+    """
+    from hailuo_video.director import plan_director_brief
+
+    for shot in shots:
+        try:
+            brief = plan_director_brief(shot, None)
+        except Exception:
+            continue
+        if not getattr(shot, "static_visual", ""):
+            shot.static_visual = brief.static_visual
+        if not getattr(shot, "dynamic_narrative", ""):
+            shot.dynamic_narrative = brief.dynamic_narrative
+        if not getattr(shot, "color_lock", ""):
+            shot.color_lock = brief.color_lock
+    return shots
 
 
 def novel_to_storyboard(
@@ -900,11 +1098,27 @@ def novel_to_storyboard(
     *,
     n_shots: int = 30,
 ) -> Storyboard:
-    """端到端：novel → script → characters → storyboard。"""
+    """端到端：novel → script → characters → storyboard + 画风锚定 + 场景 reference。
+
+    F1 修复（2026-10-22）：补齐 `Storyboard.scenes` 与 `Storyboard.style_anchor`
+    —— 这两个字段此前恒为空，导致 (a) V2.5 scene sheet 无 reference 可生成，
+    (b) validate_storyboard 报 scene_undefined / no_style_anchor，
+    (c) 下游按 scene_id 选场景变体时永远 fallback 到 default。
+
+    `style_anchor` 随剧本同一次 LLM 调用产出（`Script.style_anchor` 直通），
+    **不额外加一次往返**：画风是创作决策，硬编码默认值只会把"画面一眼 AI"
+    换个地方继续存在（CLAUDE.md §2：不要用编造的默认值换取表面通过）。
+    """
     script = novel_to_script(novel, backend)
     characters = script_to_characters(script, backend)
     shots = script_to_storyboard(script, characters, backend, n_shots=n_shots)
-    return Storyboard(title=script.title, characters=characters, shots=shots)
+    return Storyboard(
+        title=script.title,
+        characters=characters,
+        scenes=[s.to_scene_spec() for s in script.scenes],
+        shots=shots,
+        style_anchor=script.style_anchor,
+    )
 
 
 # ---------- 文件 IO ----------
