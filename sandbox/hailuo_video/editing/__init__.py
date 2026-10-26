@@ -68,6 +68,11 @@ from hailuo_video.editing.lut import (
 )
 
 # ---------- full pipeline (完整后期管线) ----------
+from hailuo_video.editing.merge import (
+    ensure_srt,
+    merge_shot_media,
+    vtt_to_srt,
+)
 from hailuo_video.editing.full import (
     FullEditingResult,
     full_editing_pipeline,
@@ -114,4 +119,8 @@ __all__ = [
     # full
     "FullEditingResult",
     "full_editing_pipeline",
+    # merge（V4.0 W-D：每镜烧字幕 + 混旁白）
+    "ensure_srt",
+    "merge_shot_media",
+    "vtt_to_srt",
 ]

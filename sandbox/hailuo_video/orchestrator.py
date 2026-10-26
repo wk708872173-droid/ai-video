@@ -101,7 +101,9 @@ class PipelineConfig:
     image_backend: Any = None               # image_engine.IImageBackend
     video_backend: Any = None               # video_engine.KenBurnsBackend
     tts_backend: Any = None                  # tts_engine.TTSBackend
-    voice: str = "zh-CN-XiaoxiaoNeural"
+    # V4.0 BUG-D："" = 未指定 → 由 voice_cast 按说话角色分配（未指定时用
+    #   EDGE_TTS_VOICE 兜底）。旧的硬编码默认值遮蔽了 env。
+    voice: str = ""
     video_seconds: int = 5
     video_fps: int = 8
     video_effect: str = "cycle"
@@ -527,6 +529,12 @@ class PipelineAgent:
             # 从 registry 中收集 motion_gen / video_synth 的产物（按 shot_idx）
             video_paths = self._collect_video_paths_for_editing(ctx, shot_idx)
             task["video_paths"] = video_paths
+            # V4.0 BUG-C：把每镜的旁白 / 字幕一起传下去。
+            #   此前 TTS 的产物被丢在 registry 里没人用 → 成片**无配音无字幕**
+            #   （实测仓库里 9 个成片有 8 个无音轨）。
+            #   列表必须与 video_paths **下标对齐**（缺的留 None）。
+            task["audio_paths"] = self._collect_by_shot(ctx, "audio", len(video_paths))
+            task["subtitle_paths"] = self._collect_by_shot(ctx, "subtitle", len(video_paths))
             task["output_path"] = str(self.config.run_dir / "final.mp4")
             task["output_dir"] = str(self.config.run_dir / "intermediate")
             task["mode"] = "full"  # 用 full pipeline（color → crossfade → LUT）
@@ -589,17 +597,40 @@ class PipelineAgent:
         """V3.9 W-C：解出这一镜的音色与说话角色。返回 (voice, speaker)。
 
         分配表挂在 agent 上（`self._voice_cast`）→ 整个 run 内同一角色恒定同音色。
+
+        V4.0 BUG-D：`--voice` 显式指定 → **覆盖一切**（保持旧语义：用户明确要
+        一个音色就全片用它）；未指定 → 按说话角色分配，
+        旁白音色取 `EDGE_TTS_VOICE`（未设则用内置叙述者音色）。
         """
-        from hailuo_video.voice_cast import VoiceCast, resolve_voice_for_shot
+        from hailuo_video.voice_cast import (
+            NARRATOR_VOICE,
+            VoiceCast,
+            normalize_voice,
+            resolve_voice_for_shot,
+            speaker_of,
+        )
+
+        # 显式全局音色（--voice / PipelineConfig.voice）→ 覆盖一切
+        explicit_global = normalize_voice(str(getattr(self.config, "voice", "") or ""))
+        if explicit_global:
+            return explicit_global, speaker_of(shot)
+
+        # 注意：必须读 **os.environ 原始值**，不能用 te.default_voice() ——
+        # 后者在 env 未设时返回 DEFAULT_VOICE（Xiaoxiao），会把旁白音色顶掉。
+        import os
+        env_voice = normalize_voice(os.environ.get("EDGE_TTS_VOICE", "") or "")
+        narrator = env_voice or NARRATOR_VOICE
 
         if getattr(self, "_voice_cast", None) is None:
             self._voice_cast = VoiceCast(
-                default_voice=getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural"),
+                default_voice=env_voice or "zh-CN-XiaoxiaoNeural",
+                narrator_voice=narrator,
             )
         try:
             voice, speaker = resolve_voice_for_shot(
                 shot, storyboard, cast=self._voice_cast,
-                default_voice=getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural"),
+                default_voice=env_voice or "zh-CN-XiaoxiaoNeural",
+                narrator_voice=narrator,
             )
             # V3.9 W-C：角色撞音色 → 报出来（"看起来成功、实际有问题"的静默缺陷）
             for v, names in self._voice_cast.collisions():
@@ -613,7 +644,7 @@ class PipelineAgent:
                     )
             return voice, speaker
         except Exception:
-            return getattr(self.config, "voice", "zh-CN-XiaoxiaoNeural"), ""
+            return env_voice or "zh-CN-XiaoxiaoNeural", ""
 
     def _resolve_aspect_ratio(self) -> str:
         """V3.8 缺陷 1：画幅解析优先级 = config 显式值 > backend 自己的 env 默认 > "16:9"。
@@ -637,32 +668,72 @@ class PipelineAgent:
                 return str(value)
         return "16:9"
 
-    def _collect_video_paths_for_editing(self, ctx: dict, shot_idx: int) -> list[str]:
-        """V3.2 自动开发冲刺（轮 6）：收集 editing phase 需要的 video_paths。
+    def _collect_by_shot(self, ctx: dict, kind: str, shot_count: int) -> list[str | None]:
+        """按 shot_idx 收集某类产物，返回**与镜头下标对齐**的列表。
 
-        优先级：motion_gen > video_pending > video_synth（Ken Burns fallback）。
+        V4.0 BUG-C：editing 阶段需要每镜的旁白（audio）与字幕（subtitle）。
 
-        V3.8：旧实现第三个「兜底」分支与第一个分支**代码完全相同**
-        （都是 by_kind_iter("video")），且只在 paths 为空时才走到 → 纯死代码。
-        已删除；并改为按 shot_idx 排序，保证拼接顺序稳定（时间顺序）。
+        **必须与视频列表下标对齐**（缺的那镜留 None）—— 若返回"只有存在的那几项"
+        的紧凑列表，调用方按下标取就会把 shot 1 的旁白安到 shot 0 上（张冠李戴）。
+
+        依赖 BUG-A 修复：artifact_id 按 shot 隔离，否则 registry 里只剩最后一镜。
         """
-        paths: list[str] = []
-        # 优先 motion_gen（真 AI 视频）
-        for art in self.registry.by_kind_iter("video"):
-            if art.path and Path(str(art.path)).exists():
-                paths.append(str(art.path))
-        # 次选 video_pending（motion_gen 还在后台轮询的中间产物）
-        if not paths:
-            for art in self.registry.by_kind_iter("video_pending"):
-                if art.path and Path(str(art.path)).exists():
-                    paths.append(str(art.path))
-        # 按 shot_idx 排序（时间顺序稳定）
-        def _key(item: str) -> tuple[int, str]:
-            for art in self.registry.by_kind_iter("video"):
-                if str(art.path) == item:
-                    return (int(art.metadata.get("shot_idx", 0) or 0), item)
-            return (0, item)
-        return sorted(paths, key=_key)
+        by_shot: dict[int, str] = {}
+        for art in self.registry.by_kind_iter(kind):
+            path = str(art.path or "")
+            if not path or not Path(path).exists():
+                continue
+            meta_idx = art.metadata.get("shot_idx")
+            try:
+                key = int(meta_idx) if meta_idx is not None else None
+            except (TypeError, ValueError):
+                key = None
+            if key is None:
+                digits = "".join(ch for ch in art.artifact_id if ch.isdigit())
+                key = int(digits) if digits else 0
+            by_shot.setdefault(key, path)
+        return [by_shot.get(i) for i in range(shot_count)]
+
+    def _collect_video_paths_for_editing(self, ctx: dict, shot_idx: int) -> list[str]:
+        """收集 editing phase 要拼接的**每镜一段**视频（按 shot 顺序）。
+
+        V4.0 BUG-B：旧实现把 registry 里**所有** kind="video" 的产物都收进来 ——
+        同一镜的 motion 视频与 Ken Burns 兜底视频**同时**进列表 → 成片里该镜
+        出现两次。（V3.8 已删掉其中一段死分支，但"全都收"这个语义还在。）
+
+        V4.0：按 shot_idx 分组，**每镜优先 motion（真 AI 视频）**，没有则用
+        Ken Burns 兜底；按 shot_idx 排序保证时间顺序。
+
+        依赖 BUG-A 修复：artifact_id 必须按 shot 隔离，否则 registry 里每镜的
+        产物互相覆盖，分组就无从谈起。
+        """
+        by_shot: dict[int, dict[str, str]] = {}
+        for kind in ("video", "video_pending"):
+            for art in self.registry.by_kind_iter(kind):
+                path = str(art.path or "")
+                if not path or not Path(path).exists():
+                    continue
+                meta_idx = art.metadata.get("shot_idx")
+                try:
+                    key = int(meta_idx) if meta_idx is not None else None
+                except (TypeError, ValueError):
+                    key = None
+                if key is None:
+                    # 没有 shot_idx → 按 artifact_id 里的数字兜底（"video_3" / "motion_3"）
+                    digits = "".join(ch for ch in art.artifact_id if ch.isdigit())
+                    key = int(digits) if digits else 0
+                slot = by_shot.setdefault(key, {})
+                is_motion = art.producer == "motion_gen" or art.artifact_id.startswith("motion_")
+                # motion 优先；已有 motion 时不被 Ken Burns 覆盖
+                slot["motion" if is_motion else "fallback"] = path
+
+        out: list[str] = []
+        for key in sorted(by_shot):
+            slot = by_shot[key]
+            chosen = slot.get("motion") or slot.get("fallback")
+            if chosen:
+                out.append(chosen)
+        return out
 
     def _get_image_path_for_shot(self, ctx: dict, shot_idx: int) -> str:
         """V3.2 自动开发冲刺（轮 6）：从 registry 中找 shot_idx 对应的 image artifact。

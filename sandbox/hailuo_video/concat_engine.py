@@ -163,8 +163,15 @@ def merge_clip(
     video_codec: str = "libx264",
     audio_codec: str = "aac",
     extra_args: list[str] | None = None,
+    shortest: bool = True,
 ) -> Path:
-    """把音频合并到视频。短时长优先（以视频为准）。"""
+    """把音频合并到视频。
+
+    Args:
+        shortest: True（默认，保持旧语义）→ 以**较短**的流为准（`-shortest`）。
+            False → 输出时长取较长者（视频优先）—— **旁白场景必须用 False**：
+            一镜 6s、旁白 3s 时，`-shortest` 会把画面**截成 3s**。
+    """
     video = str(video)
     audio = str(audio)
     output = str(output)
@@ -177,10 +184,11 @@ def merge_clip(
         "-i", audio,
         "-c:v", video_codec,
         "-c:a", audio_codec,
-        "-shortest",
         "-map", "0:v:0",
         "-map", "1:a:0",
     ]
+    if shortest:
+        args.append("-shortest")
     if extra_args:
         args.extend(extra_args)
     args.append(output)

@@ -28,6 +28,23 @@ from hailuo_video.script_engine import Script, Storyboard
 
 # ---------- AgentResult + Errors ----------
 
+def _scoped_id(prefix: str, shot_idx: Any, path: Any) -> str:
+    """按 shot 隔离的 artifact_id。
+
+    V4.0 BUG-A：Registry 用 artifact_id 做 key（`artifacts[id] = artifact`），
+    固定 id（如 "video_out"）会让每个 shot 的产物互相覆盖。
+
+    优先用 shot_idx；没有 shot_idx 时退回输出文件名（仍然唯一）。
+    """
+    if shot_idx is not None:
+        return f"{prefix}_{shot_idx}"
+    try:
+        stem = Path(str(path)).stem
+    except Exception:
+        stem = "out"
+    return f"{prefix}_{stem}"
+
+
 @dataclass
 class AgentResult:
     """Agent execute() 的返回值。"""
@@ -401,12 +418,23 @@ class VideoSynthAgent(Agent):
                 effect=task.get("effect", "zoom_in"),
             )
             if result.ok:
+                # V4.0 BUG-A：artifact_id 必须按 shot 隔离。
+                #   旧实现恒为 "video_out" → Registry.add 用 id 做 key
+                #   （`self.artifacts[artifact.artifact_id] = artifact`）→
+                #   **每个 shot 的 Ken Burns 视频互相覆盖**，registry 里只剩最后一镜，
+                #   by_kind 也因去重只剩一项 → editing 阶段只拿到 1 段视频。
+                #   实测：3 镜 storyboard → by_kind_iter("video") 只返回最后 1 镜。
+                shot_idx = task.get("shot_idx")
                 artifacts = [Artifact(
-                    artifact_id="video_out",
+                    artifact_id=_scoped_id("video", shot_idx, output_path),
                     kind="video",
                     path=result.output_path,
                     producer=self.name,
-                    metadata={"effect": result.effect, "seconds": result.seconds, "fps": result.fps},
+                    metadata={
+                        "effect": result.effect, "seconds": result.seconds,
+                        "fps": result.fps,
+                        "shot_idx": shot_idx,
+                    },
                 )]
                 return AgentResult(ok=True, artifacts=artifacts, metadata={"video_result": result})
             return AgentResult(ok=False, error=result.error)
@@ -445,19 +473,23 @@ class TTSAgent(Agent):
                 pitch=task.get("pitch", ""),
                 write_subtitle=task.get("subtitle"),
             )
+            # V4.0 BUG-A：同 VideoSynthAgent —— 固定 id 会让每个 shot 的配音互相覆盖
+            #   （registry 里只剩最后一镜的音频）。
+            shot_idx = task.get("shot_idx")
             artifacts = [Artifact(
-                artifact_id="tts_audio",
+                artifact_id=_scoped_id("tts_audio", shot_idx, output),
                 kind="audio",
                 path=output,
                 producer=self.name,
-                metadata={"voice": task.get("voice", "")},
+                metadata={"voice": task.get("voice", ""), "shot_idx": shot_idx},
             )]
             if result.sub_file:
                 artifacts.append(Artifact(
-                    artifact_id="tts_subtitle",
+                    artifact_id=_scoped_id("tts_subtitle", shot_idx, result.sub_file),
                     kind="subtitle",
                     path=Path(result.sub_file),
                     producer=self.name,
+                    metadata={"shot_idx": shot_idx},
                 ))
             return AgentResult(ok=True, artifacts=artifacts, metadata={"tts_result": result})
         except Exception as exc:
@@ -734,6 +766,9 @@ class EditingAgent(Agent):
                     except Exception as _exc:
                         _ssim_log.warning("ssim_gate_skip path=%s reason=%s: %s", _vp, type(_exc).__name__, _exc)
                 result = ed_mod.full_editing_pipeline(
+                    # V4.0 BUG-C：把每镜的旁白 / 字幕传进去（此前从不传 → 成片无配音无字幕）
+                    audio_paths=list(task.get("audio_paths") or []),
+                    subtitle_paths=list(task.get("subtitle_paths") or []),
                     video_paths=task["video_paths"],
                     output_path=task["output_path"],
                     lut_path=task.get("lut_path"),
@@ -818,6 +853,8 @@ class MotionGenerationAgent(Agent):
                         "task_id": motion_result.task_id,
                         "model": motion_result.model,
                         "status": motion_result.status,
+                        # V4.0 BUG-B：editing 阶段按 shot_idx 分组选片，需要它
+                        "shot_idx": task.get("shot_idx", task.get("shot_id")),
                     },
                 )]
                 return AgentResult(ok=True, artifacts=artifacts, metadata={"motion": motion_result})

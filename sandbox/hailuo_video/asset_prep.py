@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import base64
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -1365,32 +1366,35 @@ def resolve_shot_reference_urls(
 ) -> ShotReferenceUrls:
     """按 4 轴 picker 从 assets 缓存收集本镜 subject reference。
 
-    顺序与 V2 pipeline 一致：每个在场角色的角度、表情，然后场景时间变体。
-    合计最多 MAX_SUBJECT_REFERENCES 个。缓存缺失的轴跳过，不把角色名当作参考图。
-    优先返回 http(s) URL；无 URL 的缓存（Gemini）回退为本地图片路径。
-    V2 `run_pipeline` 与 V3 orchestrator 都走这个函数，避免两条管线各选各的。
+    合计最多 MAX_SUBJECT_REFERENCES 个（image-01 的硬上限）。缓存缺失的轴跳过，
+    不把角色名当作参考图。优先返回 http(s) URL；无 URL 的缓存（Gemini）回退为
+    本地图片路径。V2 `run_pipeline` 与 V3 orchestrator 都走这个函数。
+
+    V4.0 BUG-E：**优先级改为 角度 → 场景 → 表情**。
+    旧顺序是"每角色：角度 + 表情，然后场景" → 双角色镜头就是
+    2×(角度+表情) = 4 个槽位占满 → **场景参考图（背景/光线锚定）被挤掉**。
+    而场景锚定正是跨镜连续性门禁（continuity.py）要衡量的一致性来源 ——
+    我们建了门禁，却把它的锚点扔了。
+    改后：双角色镜头 = [角度A, 角度B, 场景, 表情A] → 身份锚定与场景锚定都在。
+    角色多于 2 个时场景仍可能被挤掉 → 这种情况会告警（不静默）。
     """
     root = Path(assets_dir)
     urls: list[str] = []
     labels: list[str] = []
     scene_urls: list[str] = []
     stale_labels: list[str] = []
+    # 候选池：(url, label, is_scene)。最终按优先级截断到 MAX_SUBJECT_REFERENCES。
+    angle_entries: list[tuple[str, str]] = []
+    expression_entries: list[tuple[str, str]] = []
+    scene_entry: tuple[str, str] | None = None
 
-    def _add(url: str, label: str, *, scene: bool = False) -> None:
-        if not url or url in urls or len(urls) >= MAX_SUBJECT_REFERENCES:
-            return
-        urls.append(url)
-        labels.append(label)
-        if scene:
-            scene_urls.append(url)
-
-    def _add_ref(url_path: Path, image_path: Path, label: str, *, scene: bool = False) -> None:
-        """读一条 reference 并加入；**过期则跳过并记录**（R4：不得静默使用过期 URL）。"""
+    def _read_ref(url_path: Path, image_path: Path, label: str) -> str:
+        """读一条 reference；**过期则跳过并记录**（R4：不得静默使用过期 URL）。"""
         value, stale = _read_cached_ref(url_path, image_path)
         if stale:
             stale_labels.append(label)
-            return
-        _add(value, label, scene=scene)
+            return ""
+        return value
 
     for name in list(getattr(shot, "characters", []) or []):
         angle = pick_angle_for_shot(
@@ -1398,20 +1402,24 @@ def resolve_shot_reference_urls(
             camera_motion=getattr(shot, "camera_motion", "") or "",
             shot_index=shot_index,
         )
-        _add_ref(
+        value = _read_ref(
             character_angle_url_path(name, angle, root),
             character_angle_path(name, angle, root),
             f"{name}/{angle}",
         )
+        if value:
+            angle_entries.append((value, f"{name}/{angle}"))
         expression = pick_expression_for_mood(
             list(getattr(shot, "mood", []) or []),
             shot_index=shot_index,
         )
-        _add_ref(
+        value = _read_ref(
             character_expression_url_path(name, expression, root),
             character_expression_path(name, expression, root),
             f"{name}/expression_{expression}",
         )
+        if value:
+            expression_entries.append((value, f"{name}/expression_{expression}"))
 
     scene_id = getattr(shot, "scene_id", None)
     if scene_id:
@@ -1436,11 +1444,30 @@ def resolve_shot_reference_urls(
             if scene_stale:
                 stale_labels.append(scene_label)
                 scene_url = ""
-        if scene_url and scene_url not in urls and len(urls) >= MAX_SUBJECT_REFERENCES:
-            # 场景 URL 已解析，但合并列表已满。scene_urls 仍记录，调用方不要再塞进第 5 个 ref。
-            scene_urls.append(scene_url)
-        else:
-            _add(scene_url, scene_label, scene=True)
+        if scene_url:
+            scene_entry = (scene_url, scene_label)
+
+    # V4.0 BUG-E：按优先级 角度 → 场景 → 表情 截断到 MAX_SUBJECT_REFERENCES。
+    ordered: list[tuple[str, str, bool]] = (
+        [(u, l, False) for u, l in angle_entries]
+        + ([(scene_entry[0], scene_entry[1], True)] if scene_entry else [])
+        + [(u, l, False) for u, l in expression_entries]
+    )
+    for url, label, is_scene in ordered[:MAX_SUBJECT_REFERENCES]:
+        if url in urls:
+            continue
+        urls.append(url)
+        labels.append(label)
+        if is_scene:
+            scene_urls.append(url)
+
+    # 场景锚定被挤掉 → 告警（跨镜背景/光线会漂；门禁会量到，但根因要说清）
+    if scene_entry and scene_entry[0] not in urls:
+        print(
+            f"[asset-prep] [WARN] 场景参考图被 {MAX_SUBJECT_REFERENCES} 个参考图上限挤掉"
+            f"（{scene_entry[1]}）—— 在场角色过多时背景/光线锚定会漂",
+            file=sys.stderr,
+        )
 
     return ShotReferenceUrls(
         urls=urls, labels=labels, scene_urls=scene_urls, stale_labels=stale_labels,

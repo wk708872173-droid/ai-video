@@ -54,6 +54,8 @@ def full_editing_pipeline(
     transition: str = "fade",
     overlap_seconds: float = 0.25,
     work_dir: str | Path | None = None,
+    audio_paths: list[str | Path] | None = None,
+    subtitle_paths: list[str | Path] | None = None,
 ) -> FullEditingResult:
     """完整后期管线：色彩归一化 → 运动匹配 → 叠化 → LUT。
 
@@ -70,6 +72,12 @@ def full_editing_pipeline(
         transition: xfade transition
         overlap_seconds: 叠化时长
         work_dir: 中间产物目录；None → 系统临时目录
+        audio_paths: **每镜**的旁白 mp3（与 video_paths 按下标对应；可空）
+        subtitle_paths: **每镜**的字幕 .vtt/.srt（与 video_paths 按下标对应；可空）
+
+    V4.0 BUG-C：此前 audio/subtitle 从不传入 → TTS 的配音与字幕**从未进成片**
+    （实测仓库里 9 个成片有 8 个无音轨）。现在在每镜层面烧字幕 + 混旁白，
+    再交给 crossfade 的 acrossfade 把各镜音轨叠起来。
 
     失败抛 EditingError。
     """
@@ -87,6 +95,25 @@ def full_editing_pipeline(
         video_paths, color_dir,
     )
     normalized_paths = [Path(r.output_path) for r in color_results]
+
+    # Step 1.5: 每镜烧字幕 + 混旁白（V4.0 BUG-C）
+    #   在**每镜**层面做，时间戳天然正确（每镜 vtt 是相对该镜的）；
+    #   混完的片段带音轨 → 后面 crossfade 的 acrossfade 会把音轨叠起来。
+    audio_list = list(audio_paths or [])
+    subtitle_list = list(subtitle_paths or [])
+    if audio_list or subtitle_list:
+        merged_dir = work / "merged"
+        merged_dir.mkdir(parents=True, exist_ok=True)
+        merged_paths: list[Path] = []
+        for i, vpath in enumerate(normalized_paths):
+            a = audio_list[i] if i < len(audio_list) else None
+            s = subtitle_list[i] if i < len(subtitle_list) else None
+            out = merged_dir / f"{i:04d}_av.mp4"
+            merged_paths.append(
+                _editing_pkg.merge_shot_media(vpath, out, audio=a, subtitle=s,
+                                              work_dir=merged_dir)
+            )
+        normalized_paths = merged_paths
 
     # Step 2: motion peaks（仅记录）
     motion_peaks = _editing_pkg.motion_match_cut_points(normalized_paths)

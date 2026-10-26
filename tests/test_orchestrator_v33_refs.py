@@ -271,7 +271,12 @@ def test_image_gen_agent_merges_character_and_scene_urls():
 
 
 def test_image_gen_task_uses_character_and_scene_cache(tmp_path):
-    """缓存齐全时 subject_references = 角度 + 表情 + 场景 URL。"""
+    """缓存齐全时 subject_references = 角度 + **场景** + 表情。
+
+    V4.0 BUG-E：优先级从"角度+表情+场景"改为"角度+场景+表情" ——
+    旧顺序下双角色镜头 2×(角度+表情)=4 个槽位占满 → **场景参考图被挤掉**，
+    而场景锚定正是跨镜连续性门禁要衡量的一致性来源。
+    """
     assets = tmp_path / "assets"
     char_dir = assets / "characters" / "橘猫"
     char_dir.mkdir(parents=True)
@@ -290,6 +295,6 @@ def test_image_gen_task_uses_character_and_scene_cache(tmp_path):
     ctx = {"storyboard": sb, "shot_count": 1, "intermediate_dir": tmp_path / "inter"}
     task = agent._build_task("image_gen", 0, ctx, type("P", (), {"name": "image_gen"})())
 
-    assert task["subject_references"] == [front, expr, scene]
+    assert task["subject_references"] == [front, scene, expr]   # V4.0 BUG-E：场景优先于表情
     assert task["scene_references"] == [scene]
     assert "橘猫" not in task["subject_references"]

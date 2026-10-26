@@ -356,6 +356,74 @@
       ],
       "importance": 4,
       "note": "CI 与本地门禁同源：.github/workflows/ci.yml 跑同一个 scripts/auto_dev.py（py3.11/3.13），不另起 pytest 命令（'CI 绿了'不等于'本地门禁也绿'）。附带修 dev extra 缺 pytest-cov、secret scan 打印凭据本身、CI 上 secret scan 空转三个问题。"
+    },
+    {
+      "id": "D-034",
+      "topic": "artifact-id-per-shot",
+      "keywords": [
+        "artifact",
+        "id",
+        "per",
+        "shot",
+        "V4.0"
+      ],
+      "importance": 5,
+      "note": "多镜 storyboard 的产物隔离：Registry 用 artifact_id 做 key，而 VideoSynthAgent('video_out') / TTSAgent('tts_audio','tts_subtitle') 用固定 id → 每镜产物互相覆盖，registry 只剩最后一镜。实测 3 镜 → by_kind_iter('video') 只返回 1 镜。现有 sample 是逐镜跑的所以没暴露；主生产路径（script→pipeline 一次跑 N 镜）受影响。"
+    },
+    {
+      "id": "D-035",
+      "topic": "editing-one-video-per-shot",
+      "keywords": [
+        "editing",
+        "one",
+        "video",
+        "per",
+        "shot",
+        "V4.0"
+      ],
+      "importance": 4,
+      "note": "editing 每镜只选一段视频：旧实现收进 registry 里所有 kind=video 的产物 → 同镜的 motion 与 Ken Burns 同时进列表 → 成片里该镜出现两次。改为按 shot_idx 分组、motion 优先、Ken Burns 兜底、按 shot_idx 排序。依赖 D-034。"
+    },
+    {
+      "id": "D-036",
+      "topic": "tts-audio-into-final",
+      "keywords": [
+        "tts",
+        "audio",
+        "into",
+        "final",
+        "V4.0"
+      ],
+      "importance": 5,
+      "note": "TTS 配音与字幕进成片：此前 V3 editing 只处理画面，TTS 产物被丢在 registry 没人消费 → 实测仓库 9 个成片有 8 个无音轨（含客户主推的 9:16）。改为每镜烧字幕（vtt→srt，仓库此前无此转换器）+ 混旁白（merge_clip 加 shortest=False，否则画面被旁白截断），再由 crossfade 的 acrossfade 叠音轨。真 ffmpeg 端到端验证：成片有音轨、时长 5.63s。"
+    },
+    {
+      "id": "D-037",
+      "topic": "reference-priority-angle-scene-expression",
+      "keywords": [
+        "reference",
+        "priority",
+        "angle",
+        "scene",
+        "expression",
+        "V4.0"
+      ],
+      "importance": 4,
+      "note": "参考图优先级改为 角度→场景→表情：旧顺序（每角色 角度+表情，然后场景）在双角色镜头下 4 个槽位占满 → 场景参考图（背景/光线锚定）被挤掉 —— 而那正是跨镜连续性门禁要衡量的锚点。建了门禁却把锚点扔了。角色过多仍挤掉时告警。"
+    },
+    {
+      "id": "D-038",
+      "topic": "voice-hardcoded-default-shadows-env",
+      "keywords": [
+        "voice",
+        "hardcoded",
+        "default",
+        "shadows",
+        "env",
+        "V4.0"
+      ],
+      "importance": 4,
+      "note": "'--voice' 硬编码默认值遮蔽 EDGE_TTS_VOICE（硬编码默认值遮蔽上游配置的第四例，前三例：aspect_ratio / .env 白名单 / 本条）。改默认 None，显式 --voice 仍覆盖一切，未指定则按角色分配。读 os.environ 原始值而非 default_voice()（后者在 env 未设时返回默认值会顶掉内置旁白音色）。"
     }
   ],
   "lessons": [

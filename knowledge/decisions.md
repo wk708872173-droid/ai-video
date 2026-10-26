@@ -493,3 +493,95 @@
      diff 为空（CI 干净工作树）时退化为**整仓扫描**（排除 tests/ 的假凭据），
      否则 CI 上这一步永远是空转
 - 验证：`tests/test_auto_dev.py` +5 项；门禁 4 步全 PASS。
+
+## D-034 多镜 storyboard 的产物隔离：artifact_id 必须按 shot 隔离
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`Registry.add` 用 artifact_id 做 key（`artifacts[id] = artifact`），
+  而三个 agent 用了**固定 id**：`VideoSynthAgent` → `"video_out"`、
+  `TTSAgent` → `"tts_audio"` / `"tts_subtitle"`。
+  → 每个 shot 的产物**互相覆盖**，registry 里只剩最后一镜，`by_kind` 也因去重只剩一项。
+  实测：3 镜 storyboard → `by_kind_iter("video")` 只返回最后 1 镜。
+- 为什么至今没暴露：现有 sample 产物都是**逐镜跑**（`scripts/run_story.sh` +
+  `stitch_story.py`），每个 run 只有 1 镜，不存在冲突。
+  受影响的是**主生产路径**：`script` 产出 N 镜 storyboard → `pipeline` 一次跑完。
+- 决策：
+  1. 新增 `agents._scoped_id(prefix, shot_idx, path)`：优先用 shot_idx，
+     没有则退回输出文件名（仍唯一）。
+  2. `VideoSynthAgent` / `TTSAgent` 的 artifact_id 改用它；metadata 补 `shot_idx`。
+  3. `MotionGenerationAgent` 补 `shot_idx` metadata（它的 id 早已按 shot 隔离）。
+- 验证：`tests/test_multishot_artifacts.py`（10 项）。
+
+## D-035 editing 每镜只选一段视频（motion 优先）
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`_collect_video_paths_for_editing` 把 registry 里**所有** kind="video"
+  的产物都收进来 → 同一镜的 motion 视频与 Ken Burns 兜底视频**同时**进列表
+  → 成片里该镜出现两次。
+- 决策：按 shot_idx 分组，**每镜优先 motion（真 AI 视频）**，没有则用 Ken Burns 兜底；
+  按 shot_idx 排序保证时间顺序。旧数据没有 `shot_idx` metadata 时按 artifact_id
+  里的数字兜底。
+- 依赖 D-034（不隔离就没法分组）。
+- 验证：`tests/test_multishot_artifacts.py`。
+
+## D-036 TTS 配音与字幕必须进成片（此前 9 个成片有 8 个无音轨）
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：V3 的 editing 链路只处理画面
+  （`color_normalize → crossfade(xfade) → LUT`），**TTS 的配音与字幕从未进入成片**。
+  实测（ffprobe 查音轨）：仓库里已交付的 9 个成片有 **8 个无音轨**
+  （含客户主推的小红书 9:16 版本）；唯一有音轨的那个是另一条脚本（`stitch_story.py`，
+  走 V2 的 `concat_engine.concat_pipeline`）产的。
+  → TTS phase 跑完了（调了 edge-tts、花了时间），产物被丢在 registry 里没人消费。
+- 决策：**在每镜层面**烧字幕 + 混旁白，再交给 crossfade 的 acrossfade 叠音轨。
+  理由：
+  - 每镜的 .vtt 时间戳是**相对该镜**的；整片烧字幕要平移到拼接后时间轴
+    （还要算 xfade 的 0.25s 重叠）→ 极易算错。每镜烧则天然正确。
+  - 每镜合并后带上音轨 → `crossfade_clips` 的 `acrossfade` 就能把音轨叠起来
+    （该能力本来就有，只是此前没输入带音轨的视频）。
+- 落地要点：
+  1. 新增 `sandbox/hailuo_video/editing/merge.py`：
+     `vtt_to_srt()`（WebVTT→SRT，此前仓库**没有**这个转换器，而
+     `concat_engine.burn_subtitles` 只吃 .srt）、`ensure_srt()`、
+     `merge_shot_media()`（烧字幕 → 混旁白）
+  2. `concat_engine.merge_clip` 新增 `shortest: bool = True` 形参 ——
+     **旁白场景必须用 False**：默认的 `-shortest` 会让 6s 的画面被 3s 的旁白**截成 3s**。
+     默认值保持 True（向后兼容）。
+  3. `editing/full.py::full_editing_pipeline` 新增 `audio_paths` / `subtitle_paths`
+     （与 video_paths 下标对齐；缺的那镜留 None —— 返回紧凑列表会让 shot 1 的旁白
+     安到 shot 0 上）。
+  4. `EditingAgent` 与 orchestrator 的 editing task 透传这两个列表。
+- 验证：`tests/test_audio_merge.py`（15 项，含**真 ffmpeg** 端到端：
+  成片有音轨 + 时长 5.63s = 3s×2 − 0.25s xfade 重叠；对照组不传则无音轨）。
+  另附手工验证脚本 `scripts/_verify_v40_audio.py`。
+
+## D-037 参考图优先级改为 角度 → 场景 → 表情（场景锚定不再被挤掉）
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`MAX_SUBJECT_REFERENCES = 4`（image-01 硬上限）。旧 picker 顺序是
+  "每角色：角度 + 表情，然后场景" → **双角色镜头**就是 2×(角度+表情) = 4 个槽位占满
+  → **场景参考图（背景/光线锚定）被挤掉**。
+  而场景锚定正是 V3.8 W3 的跨镜连续性门禁要衡量的一致性来源 ——
+  **我们建了门禁，却把它的锚点扔了**。
+- 决策：优先级改为 **角度 → 场景 → 表情**。双角色镜头 = [角度A, 角度B, 场景, 表情A]
+  → 身份锚定与场景锚定都在。角色多于 2 个时场景仍可能被挤掉 → **告警**（不静默）。
+- 连带：`tests/test_orchestrator_v33_refs.py` 的顺序断言从 `[front, expr, scene]`
+  改为 `[front, scene, expr]`（这是**有意的契约变更**，不是把断言改绿）。
+- 验证：`tests/test_config_precedence.py`（10 项）。
+
+## D-038 `--voice` 硬编码默认值遮蔽 `EDGE_TTS_VOICE`（第四例）
+- 决策日期：2026-10-26
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`cli.py` 的 `pipeline` 子命令把 `--voice` 默认值硬编码成
+  `"zh-CN-XiaoxiaoNeural"` → 用户在 `.env` 里配 `EDGE_TTS_VOICE` 也**永不生效**
+  （`tts` 子命令用的是 `default=None`，所以只有 pipeline 有这个坑）。
+  这是"硬编码默认值逐层遮蔽上游配置"的**第四例**
+  （前两例：V3.8 的 `aspect_ratio`、V3.9 的 `.env` 白名单）。
+- 决策：
+  1. `--voice` 默认改 `None`；`PipelineConfig.voice` / `run_pipeline_v3(voice=)` 默认改 `""`
+     （= 未指定）。
+  2. 语义：显式 `--voice X` → **覆盖一切**（保持旧语义：用户明确要一个音色就全片用它）；
+     未指定 → 按说话角色分配（V3.9 W-C），旁白音色取 `EDGE_TTS_VOICE`（未设则用内置叙述者音色）。
+  3. 注意读 **os.environ 原始值**而不是 `tts_engine.default_voice()` ——
+     后者在 env 未设时返回 DEFAULT_VOICE（Xiaoxiao），会把内置旁白音色顶掉。
+- 验证：`tests/test_config_precedence.py`。

@@ -463,6 +463,11 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 | BUG-118 | 🟢 低 | **`editing` phase 的 `_collect_video_paths_for_editing` 含一段与首段完全相同的死分支** | ✅ **V3.8 已修**（D-027）。死分支已删 |
 | BUG-119 | 🟢 低 | **`last_frame_image` 死代码**：`_generate_i2v` 接受 last_frame 但 API 不支持（2013） | ✅ **V3.9 已修**。已删分支与 body 拼装；误传时告警并回退 T2V |
 | BUG-120 | 🟢 低 | **PRD 声称 Task Scheduler 脚本待生成，但 `scripts/daily_cron_setup.py` 已存在** | ⬜ **未修**。文档漂移，待下次文档批处理 |
+| BUG-127 | 🔴 高 | **多镜 storyboard 的产物互相覆盖**：`VideoSynthAgent`(`video_out`) / `TTSAgent`(`tts_audio`) 用固定 artifact_id，Registry 按 id 覆盖 → registry 里只剩最后一镜 | ✅ **V4.0 已修**（D-034）。artifact_id 按 shot 隔离 |
+| BUG-128 | 🔴 高 | **成片无配音无字幕**：V3 editing 只处理画面，TTS 产物被丢在 registry 没人消费 → 实测 9 个已交付成片有 **8 个无音轨** | ✅ **V4.0 已修**（D-036）。每镜烧字幕 + 混旁白（真 ffmpeg 端到端验证）|
+| BUG-129 | 🟠 中 | **editing 把同镜的 motion 与 Ken Burns 一起收进拼接列表** → 成片里该镜出现两次 | ✅ **V4.0 已修**（D-035）。按 shot 分组、motion 优先 |
+| BUG-130 | 🟠 中 | **双角色镜头的场景参考图被挤掉**（4 个参考图上限；旧顺序 2×(角度+表情) 占满）→ 跨镜背景/光线锚定丢失，而连续性门禁正要衡量它 | ✅ **V4.0 已修**（D-037）。优先级改为 角度→场景→表情 |
+| BUG-131 | 🟡 中 | **`--voice` 硬编码默认值遮蔽 `EDGE_TTS_VOICE`**（只有 pipeline 子命令有；tts 子命令是 default=None） | ✅ **V4.0 已修**（D-038）。默认 None = 未指定 → 按角色分配 |
 | BUG-121 | 🔴 高 | **`.env` 白名单漂移**：代码共读 44 个 env key，能从 `.env` 加载的只有 24 个 → `MINIMAX_VIDEO_*`（Hailuo 视频端点）/ `EDGE_TTS_*`（音色）/ `YOUTUBE_*`（凭据）等 **20 个配了永不生效** | ✅ **V3.9 已修**（D-029）。统一 loader + 单一白名单 + 不变量测试（正则扫源码）|
 | BUG-122 | 🟠 中 | **`auto_dev.py` 的 pytest 路径参数是字面量 "TESTS"** → 门禁跑测试时**不加载 `tests/conftest.py`**（conftest 按 args 目录链加载）| ✅ **V3.9 已修**（D-030）。改 `str(TESTS)` + 2 条回归测试 |
 | BUG-123 | 🟠 中 | **secret scan 把凭据本身打进日志**（打的是 `m.group()[:30]` = 密钥前 30 字符），且 CI 上工作树干净时扫描**完全空转** | ✅ **V3.9 已修**。改为只打 `***REDACTED***``；diff 为空时退化为整仓扫描 |

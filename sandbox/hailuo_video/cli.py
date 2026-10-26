@@ -660,7 +660,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         image_backend=image_backend,
         tts_backend=tts_backend,
         video_backend=video_backend,
-        voice=args.voice,
+        voice=args.voice or "",
         video_seconds=args.video_seconds,
         video_fps=args.video_fps,
         video_effect=args.video_effect,
@@ -927,7 +927,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="图像后端（默认 minimax；gemini=Nano Banana；mock 不调真 API）")
     p.add_argument("--tts-backend", choices=["edge", "mock"], default="edge",
                    help="TTS 后端（默认 edge；mock 不调真 API）")
-    p.add_argument("--voice", default="zh-CN-XiaoxiaoNeural", help="TTS voice 名")
+    # V4.0 BUG-D：此前默认值硬编码 → `EDGE_TTS_VOICE` 在 pipeline 路径上**永不生效**
+    #   （tts 子命令的 --voice 用的是 default=None，所以只有 pipeline 有这个坑）。
+    #   改为 None = "未指定" → 由 voice_cast 按说话角色分配（见 voice_cast.py）。
+    p.add_argument("--voice", default=None,
+                   help="TTS voice 名（不指定 = 按角色分配音色；指定 = 全部镜头用此音色）")
     p.add_argument("--video-seconds", type=int, default=5, help="每镜头视频秒数（默认 5）")
     p.add_argument("--video-fps", type=int, default=8, help="视频帧率（默认 8）")
     p.add_argument("--video-effect", default="cycle",

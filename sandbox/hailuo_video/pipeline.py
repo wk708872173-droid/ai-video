@@ -540,7 +540,9 @@ def run_pipeline_v3(
     image_backend: ie.ImageBackend | None = None,
     video_backend: ve.KenBurnsBackend | None = None,
     tts_backend: te.TTSBackend | None = None,
-    voice: str = "zh-CN-XiaoxiaoNeural",
+    # V4.0 BUG-D："" = 未指定 → 由 voice_cast 按说话角色分配。
+    #   旧的硬编码默认值会遮蔽 EDGE_TTS_VOICE（与 aspect_ratio 同类问题）。
+    voice: str = "",
     video_seconds: int = 5,
     video_fps: int = 8,
     video_effect: str = "cycle",
