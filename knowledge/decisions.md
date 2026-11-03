@@ -585,3 +585,52 @@
   3. 注意读 **os.environ 原始值**而不是 `tts_engine.default_voice()` ——
      后者在 env 未设时返回 DEFAULT_VOICE（Xiaoxiao），会把内置旁白音色顶掉。
 - 验证：`tests/test_config_precedence.py`。
+
+## D-039 真实 LLM 路径从未跑通过 —— 4 个叠加缺陷 + 渲染层转义泄漏
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**（已实施）
+- 上下文：用户更新 `.env` 的 API key 后验收，发现 `script` 子命令的
+  `--backend minimax` **真实路径从未成功跑通**。PRD 里那条 `R1 [UNVERIFIED]`
+  （端点/模型/响应结构未核实）是准确的 —— 项目一直在用 mock 跑测试，
+  真路径从来没被端到端验证过。这是「看起来成功实际失败」的最典型一例。
+- 实测证据（2026-11-03，`MiniMax-M3`，真 API）：
+  - `GET /v1/models` → 可用模型：`MiniMax-M3.1-Flash` / `MiniMax-M3` /
+    `MiniMax-M2.7[-highspeed]` / `MiniMax-M2.5[-highspeed]` / `MiniMax-M2.1[-highspeed]`
+  - 4 个叠加缺陷（任意一个单独存在都足以失败）：
+    | # | 缺陷 | 症状 | 修法 |
+    |---|---|---|---|
+    | 1 | prompt 与 schema 自相矛盾 | `NOVEL_TO_SCRIPT_PROMPT` 要求"改编为一段 **30 镜头**的漫剧剧本"，但输出 schema **没有 shots 字段**（分镜是第 3 步才生成）→ 模型为自洽疯狂推理 | prompt 改"只写场景级剧本" + 显式"不要写分镜表" |
+    | 2 | 请求体无 `response_format` | 提示词里写"输出严格 JSON"只是祈使句，不是约束 | 请求体加 `{"type":"json_object"}`（实测 API **支持**） |
+    | 3 | 推理模型内联 `<think>` 块 | `MiniMax-M3` 的 content = `<think>...推理...</think>{json}` → 解析必失败 | 解析前 `strip_reasoning()`（含未闭合块） |
+    | 4 | `max_tokens` / `timeout` 太小 | 推理 token 与输出**共享**预算：4096 被推理吃光 → `finish_reason=length` → content 空 → "LLM 返回为空"；60s 把 95s 的成功请求打成超时 | `MAX_TOKENS` 4096→8192、`REQUEST_TIMEOUT` 60→180 |
+  - 渲染层缺陷：`{{` / `}}` 转义是 `.format()` 时代写法，渲染器改成 `.replace()` 后
+    **没人还原** → 模型看到 `{{ ... }}` 这种**非法 JSON 语法**。
+    修法：渲染器**先反转义模板再替换占位符**（反转义只处理双花括号，
+    与插入值里的单花括号不冲突）。
+- 决策：
+  1. 上述 5 处全部修（`prompts.py` / `script_engine.py`）。
+  2. **默认模型保持 `MiniMax-M3` 不变** —— 换模型是语义变更，且 think 剥离
+     已让 M3 可用。需要更快可配 `MINIMAX_MODEL=MiniMax-M3.1-Flash`
+     （实测 22.4s vs 30.8s，且 content 天然干净、无需剥离）。
+  3. 新增 `tests/test_llm_path_p0.py`（15 项）锁住请求体形状与解析容错。
+- 验证：**真 API 端到端跑通** —— `script --backend minimax --shots 3`
+  → `title='橘猫望天' chars=1 shots=3`；3 对 request/response 审计事件落盘
+  （耗时 95.4s / 5.1s / 48.9s，全部在 180s 内）。
+- 教训关联：L-015。
+
+## D-040 「实现已存在但从未接线」变成可执行门禁
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**（已实施）
+- 上下文：L-011 早就记下"实现已存在但从未接线"是一类独立缺陷，
+  但**光记教训没用** —— 同类缺陷此后又复发数次。
+  根因：测试断言的是"函数返回值对不对"，**不是"它有没有被用"**。
+- 决策：新增 `tests/test_wiring_live.py`，用 **AST**（不是 grep —— grep 会把
+  注释与 docstring 里的提及误判为接线）扫生产代码，断言指定符号**必须被引用**，
+  且其模块**必须被其他生产文件 import**。
+  门禁自带一条自测（"造一个只定义不调用的符号，门禁必须报警"），
+  避免门禁因写错而永远绿 —— 那比没有门禁更危险。
+- 覆盖符号：`audit_request` / `validate_director_brief` / `lessons` /
+  `retrieve_lessons` / `make_publish_backend`。
+- 连带修复：`knowledge_store.lessons()` 只被**同模块**的 `retrieve_lessons()`
+  调用 → 门禁的"模块内链路"必须被承认（否则合法链路被误报）；
+  判据定为「符号在生产代码里被 AST 引用」+「定义模块被 import」。

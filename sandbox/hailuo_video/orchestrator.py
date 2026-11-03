@@ -156,6 +156,31 @@ DEFAULT_DAG: tuple[Phase, ...] = (
 )
 
 
+# ---------- V5.0 Batch 1：经验片段注入位置 ----------
+
+def _inject_hint(prompt: str, hint: str) -> str:
+    """把经验片段插到**风格前缀之后、内容之前**。
+
+    这里有两个都成立但位置冲突的既有契约：
+      - **V3.3 P0**：`style_anchor` 必须在 prompt **第 0 位** ——
+        Hailuo 对前缀权重高于后缀（实测；放尾缀会让视频风格漂移）。
+      - **知识库 mp_0005**：约束类信息必须**靠前** —— 放末尾会失效
+        （"色锁写在 description 末尾会失效（模型仍画成两只奶黄）"）。
+
+    折中：**风格前缀守住第 0 位**（这条是实测验证过的），经验紧随其后、
+    仍在内容描述之前 —— 两条契约同时满足。
+    """
+    if not hint:
+        return prompt
+    if not prompt:
+        return hint
+    if prompt.startswith("[风格:"):
+        end = prompt.find("]")
+        if end != -1:
+            return f"{prompt[:end + 1]} {hint} {prompt[end + 1:].lstrip()}".strip()
+    return f"{hint} {prompt}".strip()
+
+
 # ---------- PipelineAgent ----------
 
 class PipelineAgent:
@@ -189,6 +214,10 @@ class PipelineAgent:
         # V3.9 W-C：角色→音色分配表（整个 run 内同一角色恒定同音色）
         self._voice_cast = None
         self._voice_collision_seen: set[tuple[str, tuple[str, ...]]] = set()
+        # V5.0 Batch 1：知识库读侧缓存（避免每个 shot 重复读盘）。
+        #   此前 `knowledge_store.search/related/lessons` **生产零调用** ——
+        #   库在积累但从不回灌。这条缓存是读侧通路的第一步。
+        self._knowledge_store = None
         self._agent_lookup = {
             "script_writer": ScriptWriterAgent(),
             "asset_prep": AssetPrepAgent(),
@@ -199,6 +228,63 @@ class PipelineAgent:
             "editing": EditingAgent(),
             "qa": QAAgent(),
         }
+
+    # ---------- V5.0 Batch 1：project_id 派生 ----------
+
+    def _project_id(self) -> str:
+        """本次 run 的 project_id（用于 LLM 审计日志命名）。
+
+        V5.0 Batch 1：`audit_llm` 有完整实现 + 单测，但生产**从不传**
+        `project_id` → `script_engine.py` 的 `if project_id:` 恒假 →
+        **生产环境一条审计日志都不产出**。这里把 project_id 从
+        `config.project_context` 派生出来，透传到 LLM 调用点。
+        """
+        ctx = getattr(self.config, "project_context", None)
+        pid = str(getattr(ctx, "project_id", "") or "") if ctx is not None else ""
+        if pid:
+            return pid
+        # 无 ProjectContext 时用 run_dir 名当 namespace（≥4 字符，AuditLogger 要求）
+        name = Path(self.config.run_dir).name
+        return name if len(name) >= 4 else ""
+
+    # ---------- V5.0 Batch 1：知识库读侧 ----------
+
+    def _knowledge(self):
+        """取知识库（懒加载 + 缓存）。
+
+        路径语义：
+          - `config.knowledge_path` 已设 → 用它（且**写入**也才开启）
+          - 未设 → 用仓库默认 `knowledge/motion_params.json`，**只读**
+            （读是安全操作；写会污染人工维护的种子数据，所以写仍需显式开）
+
+        此前检索侧 `search/related/lessons` 零生产调用 —— 知识库"只写不读"。
+        """
+        if self._knowledge_store is not None:
+            return self._knowledge_store
+        try:
+            from hailuo_video.knowledge_store import (
+                DEFAULT_KNOWLEDGE_PATH,
+                MotionParamsStore,
+            )
+        except Exception:
+            return None
+        path = getattr(self.config, "knowledge_path", None) or DEFAULT_KNOWLEDGE_PATH
+        try:
+            self._knowledge_store = MotionParamsStore(path).load()
+        except Exception:
+            self._knowledge_store = None
+        return self._knowledge_store
+
+    def _lessons_for(self, query: str, *, limit: int = 3) -> str:
+        """检索经验 → prompt 片段（空串 = 没有匹配经验，不污染 prompt）。"""
+        store = self._knowledge()
+        if store is None:
+            return ""
+        try:
+            from hailuo_video.knowledge_store import retrieve_lessons
+            return retrieve_lessons(store, query, limit=limit)
+        except Exception:
+            return ""
 
     def _resolve_resume_index(self) -> int:
         """把 self.resume_from 名字解析为 DEFAULT_DAG 索引；不匹配 → 0。"""
@@ -395,6 +481,9 @@ class PipelineAgent:
             "aspect_ratio": self._resolve_aspect_ratio(),
             "keep_intermediate": getattr(self.config, "keep_intermediate", True),
             "parallel": getattr(self.config, "parallel", 1),
+            # V5.0 Batch 1：project_id 透传 → LLM 审计日志真正上线。
+            #   此前生产从不传，`audit_llm` 的 `if project_id:` 恒假 → 零审计产出。
+            "project_id": self._project_id(),
         }
 
         if shot is None:
@@ -432,6 +521,30 @@ class PipelineAgent:
                 task["prompt"] = " ".join(prompt_parts)
             task["style_anchor"] = style_anchor      # V3.2：让 image backend 可单独读取
             task["color_lock"] = brief.color_lock    # V3.8：跨镜色基调（连续性门禁用）
+            # V5.0 Batch 1（接线修复）：知识库**读侧**回灌。
+            #   此前 `knowledge_store.lessons()` 只在 tests 里被调用 → 生产零调用，
+            #   8 条真实生产经验（色词歧义 / 9:16 原生出图 / 色锁要放 prompt 开头…）
+            #   从不回灌给模型。经验放风格前缀**之后**（知识库 mp_0005 的原话：
+            #   "色彩约束必须放在 prompt 开头"）—— 但 V3.3 实测 `style_anchor`
+            #   必须守第 0 位，两者折中见 `_inject_hint`。
+            #   **人工手写的 static_visual 不注入** —— 尊重人工编辑（与
+            #   `_apply_director_briefs` 的"不覆盖已有值"同原则）。
+            stored_static = str(getattr(shot, "static_visual", "") or "").strip()
+            try:
+                lessons_query = " ".join(str(x) for x in (
+                    style_anchor,
+                    description,
+                    getattr(shot, "shot_type", ""),
+                    " ".join(str(c) for c in (getattr(shot, "characters", []) or [])),
+                    " ".join(str(m) for m in (getattr(shot, "mood", []) or [])),
+                    brief.color_lock,
+                ) if x)
+                lessons_hint = self._lessons_for(lessons_query, limit=3)
+            except Exception:
+                lessons_hint = ""
+            if lessons_hint and not stored_static:
+                task["lessons_hint"] = lessons_hint
+                task["prompt"] = _inject_hint(task.get("prompt", ""), lessons_hint)
             # V3.8 W4：负提示词（TIDE 式「正 + 负提示词一次产出」）。
             #   本项目此前**零**负提示词支持 —— 生成路径只能靠正向描述规避。
             #   后端若无独立 negative_prompt 字段，image_engine 会内联到 prompt 末尾。
@@ -490,6 +603,26 @@ class PipelineAgent:
                 task["subject_action"] = f"[风格:{style_anchor}] {base_subject_action}"
             task["style_anchor"] = style_anchor       # 也单独传，方便后端读取
             task["color_lock"] = brief.color_lock
+            # V5.0 Batch 1：知识库读侧回灌到 motion prompt。
+            #   mp_0001 的经验「运镜写进 prompt 前缀更稳」正是给 Hailuo 用的。
+            #   同样地，人工手写的 dynamic_narrative 不注入。
+            stored_dynamic = str(getattr(shot, "dynamic_narrative", "") or "").strip()
+            try:
+                motion_query = " ".join(str(x) for x in (
+                    getattr(shot, "camera_motion", ""),
+                    base_subject_action,
+                    style_anchor,
+                    getattr(shot, "motion_complexity", ""),
+                    brief.color_lock,
+                ) if x)
+                motion_lessons = self._lessons_for(motion_query, limit=2)
+            except Exception:
+                motion_lessons = ""
+            if motion_lessons and not stored_dynamic:
+                task["lessons_hint"] = motion_lessons
+                task["subject_action"] = _inject_hint(
+                    task["subject_action"], motion_lessons,
+                )
             # V3.4 W3 hotfix（2026-10-13）：motion_gen 必须传 image_path 给 hailuo 作 first_frame_image
             #   旧行为：task 缺 image_path → hailuo 走 T2V（纯文本）→ 自由发挥"小黄=橘猫"
             #   新行为：image_path + first_frame_image 都传 → hailuo 走 I2V → 主体锁定

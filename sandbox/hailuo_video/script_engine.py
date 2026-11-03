@@ -55,7 +55,16 @@ _DOTENV_KEYS = tuple(sorted(_LOADABLE_ENV_KEYS))
 
 DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"  # D-013 用户核实：CN 域
 DEFAULT_MODEL = "MiniMax-M3"
-REQUEST_TIMEOUT = 60
+# V5.0 Batch 1（P0 修复，2026-11-03 实测）：
+#   - `REQUEST_TIMEOUT` 60 → 180。实测真实请求耗时 22-31s（正常）/ 68-75s
+#     （prompt 有矛盾时模型长时间推理）—— 60s 上限会把**能成功**的请求
+#     打成 TimeoutError。
+#   - `MAX_TOKENS` 4096 → 8192。推理模型（M3 / M3.1）的 reasoning token
+#     **与输出共享**这个预算：实测 reasoning_tokens≈1600，剩余额度要留给
+#     真正的 JSON；4096 曾被推理吃光 → `finish_reason=length` → content 为空
+#     → "LLM 返回为空"。
+REQUEST_TIMEOUT = 180
+MAX_TOKENS = 8192
 
 
 def _load_dotenv() -> None:
@@ -273,6 +282,13 @@ class Shot:
     # ---------- V3.9 W-C：角色语音一致性（REQ-403） ----------
     voice: str = ""        # 本镜音色覆盖（edge-tts 音色名或别名）；空 = 按角色分配
     speaker: str = ""      # 本镜说话角色名；空 = 从对白里推断
+
+    # ---------- V5.0 Batch 1：导演 brief 自校验告警位 ----------
+    # VGoT 式自校验（arXiv:2412.02259）的结果落点。此前
+    # `director.validate_director_brief()` 已实现且有单测，但**生产零调用** ——
+    # 与 knowledge_store 检索侧、mcp_client 同属"实现已存在但从未接线"一类缺陷。
+    # 空串 = 校验通过。追加在末尾 → 旧 storyboard.json 仍可解析。
+    director_warnings: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -504,11 +520,40 @@ def _shot_from_dict(s: dict[str, Any], idx: int) -> Shot:
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
 
+# V5.0 Batch 1（P0 修复，2026-11-03 实测）：推理模型会把思维链**内联**进 content。
+#   `MiniMax-M3` 的 content 形如 `<think>...推理...</think>{"title": ...}` ——
+#   JSON 解析必然失败。`MiniMax-M3.1-Flash` 把推理放进独立的
+#   `reasoning_content` 字段，content 干净；但两者都可能出现内联 think 块，
+#   所以解析前统一剥离（幂等：没有 think 块时原样返回）。
+_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+# 未闭合的 think 块（推理耗尽 token 时常见）：从 <think> 起到文末全部丢弃
+_THINK_UNCLOSED = re.compile(r"<think>.*\Z", re.DOTALL)
+
+
+def strip_reasoning(text: str) -> str:
+    """剥离推理模型的思维链块，返回纯正文。
+
+    - `<think>...</think>` 完整块 → 删掉
+    - 未闭合的 `<think>...`（推理耗尽 token）→ 从 `<think>` 起到文末删掉
+    - 没有 think 块 → 原样返回（幂等）
+    """
+    if not text or "<think>" not in text:
+        return text
+    out = _THINK_BLOCK.sub("", text)
+    out = _THINK_UNCLOSED.sub("", out)
+    return out.strip()
+
 
 def _extract_json(text: str) -> dict[str, Any] | list[Any]:
     """从 LLM 输出中抽取 JSON。优先级：fenced code block → 整段 → 找首个 {/[ 配对。"""
     if not text or not text.strip():
         raise LLMError("LLM 返回为空")
+    # V5.0 Batch 1（P0）：先剥推理块，否则推理模型的 content 一律解析失败
+    text = strip_reasoning(text)
+    if not text.strip():
+        raise LLMError(
+            f"LLM 只返回了推理内容，没有正文：{text[:200]!r}"
+        )
     m = _JSON_FENCE.search(text)
     if m:
         candidate = m.group(1)
@@ -822,7 +867,13 @@ class MiniMaxChatBackend(LLMBackend):
                 {"role": "user", "content": user},
             ],
             "temperature": opts.get("temperature", 0.7),
-            "max_tokens": opts.get("max_tokens", 4096),
+            "max_tokens": opts.get("max_tokens", MAX_TOKENS),
+            # V5.0 Batch 1（P0 修复）：强制 JSON 输出。
+            #   实测（2026-11-03）：MiniMax 的 `response_format={"type":"json_object"}`
+            #   **被支持**，且能让模型直接产出可解析 JSON（`MiniMax-M3.1-Flash` 实测
+            #   content 干净、无 `<think>` 块）。此前请求体里根本没有这个字段 ——
+            #   提示词里写"输出严格 JSON"只是**祈使句**，不是约束。
+            "response_format": {"type": "json_object"},
         }
         headers = {
             "Content-Type": "application/json",
@@ -915,6 +966,21 @@ class MiniMaxChatBackend(LLMBackend):
                     log_dir=log_dir,
                 )
             raise LLMError(f"MiniMax 响应结构不符：{data!r}") from exc
+        # V5.0 Batch 1（P0 修复）：content 为空但有 reasoning_content 时，
+        #   说明**推理吃光了 token 预算**（finish_reason=length），
+        #   而不是"模型什么都没说"。这两种情况的处置完全不同，
+        #   报错必须区分开，否则排查会走错方向。
+        if not content:
+            _msg = (data["choices"][0].get("message") or {}) if data.get("choices") else {}
+            _reason = str(_msg.get("reasoning_content", "") or "")
+            _finish = data["choices"][0].get("finish_reason", "") if data.get("choices") else ""
+            if _reason or _finish == "length":
+                raise LLMError(
+                    f"MiniMax 返回空 content（finish_reason={_finish!r}，"
+                    f"reasoning_content {len(_reason)} 字符）—— "
+                    "推理 token 吃光了 max_tokens 预算。调大 max_tokens，"
+                    "或简化 prompt（减少需要推理的自相矛盾要求）。"
+                )
         if not isinstance(content, str):
             if project_id:
                 audit_response(
@@ -994,30 +1060,41 @@ def make_backend(prefer: str = "auto") -> LLMBackend:
 # ---------- Pipeline ----------
 
 def _format_prompt(template: str, **kwargs: Any) -> str:
-    """仅安全替换我们控制的变量（不调用 str.format 以免 LLM 输出含 { 报错）。"""
-    out = template
+    """仅安全替换我们控制的变量（不调用 str.format 以免 LLM 输出含 { 报错）。
+
+    V5.0 Batch 1（P0 修复）：**还原 `{{` / `}}` 转义**。
+    模板里的双花括号是 `.format()` 时代的写法；渲染器改成 replace 之后没人还原，
+    于是模型看到 `{{ ... }}` 这种**非法 JSON 语法** —— 推理模型（M3 / M3.1）
+    会为此多烧 token 去猜"这里到底该不该有双括号"。
+
+    顺序：先反转义模板，再替换占位符 —— 替换进来的值含**单个**花括号
+    （json.dumps 的输出），与"只处理双花括号"的反转义不冲突。
+    """
+    out = template.replace("{{", "{").replace("}}", "}")
     for k, v in kwargs.items():
         out = out.replace("{" + k + "}", str(v))
     return out
 
 
-def novel_to_script(novel: str, backend: LLMBackend) -> Script:
+def novel_to_script(novel: str, backend: LLMBackend, *, project_id: str = "") -> Script:
     if not novel or not novel.strip():
         raise LLMError("novel 为空")
     user = _format_prompt(NOVEL_TO_SCRIPT_PROMPT, novel=novel)
     raw = backend.chat(
         system="你是漫剧编剧，输出严格 JSON。",
         user=user,
+        project_id=project_id,
     )
     return _parse_script_payload(raw)
 
 
-def script_to_characters(script: Script, backend: LLMBackend) -> list[Character]:
+def script_to_characters(script: Script, backend: LLMBackend, *, project_id: str = "") -> list[Character]:
     script_json = json.dumps(script.to_dict(), ensure_ascii=False, indent=2)
     user = _format_prompt(CHARACTER_EXTRACTION_PROMPT, script_json=script_json)
     raw = backend.chat(
         system="你是角色设计师，输出严格 JSON。",
         user=user,
+        project_id=project_id,
     )
     return _parse_characters_payload(raw)
 
@@ -1029,6 +1106,7 @@ def script_to_storyboard(
     *,
     n_shots: int = 30,
     director_mode: bool = False,
+    project_id: str = "",
 ) -> list[Shot]:
     script_json = json.dumps(script.to_dict(), ensure_ascii=False, indent=2)
     chars_json = json.dumps([c.to_dict() for c in characters], ensure_ascii=False, indent=2)
@@ -1046,6 +1124,7 @@ def script_to_storyboard(
     raw = backend.chat(
         system="你是漫剧分镜师，输出严格 JSON。",
         user=user,
+        project_id=project_id,
     )
     shots = _parse_shots_payload(raw, n_shots=n_shots)
     # V3.8 W2：导演解耦 —— 由已有 shot 数据确定性推导 static_visual /
@@ -1059,8 +1138,15 @@ def _apply_director_briefs(shots: list[Shot]) -> list[Shot]:
 
     纯确定性推导（arXiv:2606.24107 DramaDirector 的 static/dynamic 解耦）。
     shot 上已有值时**不覆盖**（尊重人工编辑过的 storyboard.json）。
+
+    V5.0 Batch 1（接线修复）：同时跑 `director.validate_director_brief()` 自校验
+    （arXiv:2412.02259 VGoT 的 self-validation 环节），问题写进
+    `shot.director_warnings`。
+    此前该自校验**已实现且有单测，但生产零调用** —— 规划环节的自我检查形同虚设。
+    自校验**只报告不阻断**（沿用 `validate_director_brief` 的既定语义：
+    上层决定是否阻断），问题随 storyboard.json 落盘，人工审稿可见。
     """
-    from hailuo_video.director import plan_director_brief
+    from hailuo_video.director import plan_director_brief, validate_director_brief
 
     for shot in shots:
         try:
@@ -1073,6 +1159,13 @@ def _apply_director_briefs(shots: list[Shot]) -> list[Shot]:
             shot.dynamic_narrative = brief.dynamic_narrative
         if not getattr(shot, "color_lock", ""):
             shot.color_lock = brief.color_lock
+        # 自校验（对最终落地的 brief 校验，不是对推导前的空 brief）
+        try:
+            issues = validate_director_brief(brief)
+        except Exception:
+            continue
+        if issues:
+            shot.director_warnings = "；".join(issues)
     return shots
 
 
@@ -1081,6 +1174,7 @@ def novel_to_storyboard(
     backend: LLMBackend,
     *,
     n_shots: int = 30,
+    project_id: str = "",
 ) -> Storyboard:
     """端到端：novel → script → characters → storyboard + 画风锚定 + 场景 reference。
 
@@ -1092,10 +1186,16 @@ def novel_to_storyboard(
     `style_anchor` 随剧本同一次 LLM 调用产出（`Script.style_anchor` 直通），
     **不额外加一次往返**：画风是创作决策，硬编码默认值只会把"画面一眼 AI"
     换个地方继续存在（CLAUDE.md §2：不要用编造的默认值换取表面通过）。
+
+    V5.0 Batch 1（接线修复）：`project_id` 透传给 3 次 LLM 调用 —— 此前
+    **生产从不传**，导致 `audit_llm` 的 `if project_id:` 恒假、审计日志一条都不产出
+    （"声称具备、实际静默失效"）。空串 = 不审计（向后兼容旧调用方）。
     """
-    script = novel_to_script(novel, backend)
-    characters = script_to_characters(script, backend)
-    shots = script_to_storyboard(script, characters, backend, n_shots=n_shots)
+    script = novel_to_script(novel, backend, project_id=project_id)
+    characters = script_to_characters(script, backend, project_id=project_id)
+    shots = script_to_storyboard(
+        script, characters, backend, n_shots=n_shots, project_id=project_id,
+    )
     return Storyboard(
         title=script.title,
         characters=characters,

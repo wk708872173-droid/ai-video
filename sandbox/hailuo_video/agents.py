@@ -135,7 +135,11 @@ class ScriptWriterAgent(Agent):
             backend_pref = task.get("backend_prefer", "auto")
             backend = _se_mod.make_backend(backend_pref)
         try:
-            sb = se_mod.novel_to_storyboard(novel, backend)
+            # V5.0 Batch 1：透传 project_id → LLM 审计日志真正上线。
+            #   此前生产从不传，`audit_llm` 的 `if project_id:` 恒假 → 零审计产出。
+            sb = se_mod.novel_to_storyboard(
+                novel, backend, project_id=str(task.get("project_id", "") or ""),
+            )
             artifacts = [
                 Artifact(
                     artifact_id="storyboard_json",

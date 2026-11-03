@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from hailuo_video import quality
 from hailuo_video import script_engine as se
 from hailuo_video import tts_engine as te
 from hailuo_video import video_engine as ve
+from hailuo_video import publish_agent as pub
 from hailuo_video.batch import BatchSummary, load_prompts, run_batch
 from hailuo_video.local_client import (
     SANDBOX_RUNTIME,
@@ -292,8 +294,19 @@ def cmd_script(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
+    # V5.0 Batch 1：project_id 传给 LLM 调用 → 审计日志真正上线。
+    #   此前 CLI 路径也从不传 → `audit_llm` 的 `if project_id:` 恒假 → 零审计产出。
+    #   默认用输出文件名当 namespace（≥4 字符，AuditLogger 的硬要求），
+    #   用户可用 --project-id 显式指定。
+    project_id = str(getattr(args, "project_id", "") or "").strip()
+    if not project_id:
+        stem = Path(args.output).stem
+        project_id = stem if len(stem) >= 4 else "cli_script"
+
     try:
-        sb = se.novel_to_storyboard(novel, backend, n_shots=args.shots)
+        sb = se.novel_to_storyboard(
+            novel, backend, n_shots=args.shots, project_id=project_id,
+        )
     except se.LLMError as exc:
         print(f"[FAIL] LLM 失败：{exc}", file=sys.stderr)
         return 1
@@ -307,6 +320,7 @@ def cmd_script(args: argparse.Namespace) -> int:
         f"[OK] {out_path} (title={sb.title!r} chars={len(sb.characters)} shots={len(sb.shots)})",
         file=sys.stderr,
     )
+    print(f"[SCRIPT] LLM 审计日志 -> logs/{project_id}_llm_audit.jsonl", file=sys.stderr)
     return 0
 
 
@@ -884,6 +898,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--shots", type=int, default=30, help="分镜数量（默认 30）")
     s.add_argument("--backend", choices=["minimax", "mock"], default="minimax",
                    help="LLM 后端（minimax=真实，mock=单测假数据；默认 minimax）")
+    s.add_argument("--project-id", default=None,
+                   help="审计日志 namespace（默认取输出文件名；写到 logs/{project_id}_llm_audit.jsonl）")
     s.set_defaults(func=cmd_script)
 
     i = sub.add_parser("image", help="prompt → MiniMax image API → 落 jpg/png")
@@ -1009,6 +1025,18 @@ def build_parser() -> argparse.ArgumentParser:
     rv.add_argument("--output", default=None, help="评审报告 JSON 输出路径")
     rv.set_defaults(func=cmd_review)
 
+    pb = sub.add_parser("publish", help="V5.0：发布成片（mock 显式标注；youtube 需凭据）")
+    pb.add_argument("video", help="要发布的视频文件（mp4）")
+    pb.add_argument("--title", required=True, help="视频标题（≤100 字符）")
+    pb.add_argument("--description", default="", help="视频描述")
+    pb.add_argument("--tags", default="", help="逗号分隔的标签")
+    pb.add_argument("--privacy", choices=["public", "unlisted", "private"], default="unlisted",
+                    help="可见性（默认 unlisted）")
+    pb.add_argument("--backend", choices=["mock", "youtube"], default="mock",
+                    help="发布后端（mock=模拟不上传；youtube=真实，需 YOUTUBE_* 凭据）")
+    pb.add_argument("--json-out", default=None, help="发布结果 JSON 输出路径")
+    pb.set_defaults(func=cmd_publish)
+
     ca = sub.add_parser("check-assets", help="V2.6：列出 storyboard 所需但 assets/ 还没的 reference sheets")
     ca.add_argument("storyboard", help="storyboard.json")
     ca.add_argument("--assets-dir", default="./assets", help="素材目录（默认 ./assets）")
@@ -1019,6 +1047,76 @@ def build_parser() -> argparse.ArgumentParser:
     cc.set_defaults(func=cmd_consistency_check)
 
     return ap
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """V5.0 Batch 1：把 `publish_agent.py` 接线到 CLI（此前整个模块零生产调用）。
+
+    **不静默降级**（全局 CLAUDE.md §3：Auth 域硬失败）：
+      - `--backend youtube` 且凭据缺失 → 明确报错并退出，**绝不**退回 mock。
+      - `--backend mock` → 显式标注 `[MOCK]`，让人一眼看出没有真上传。
+    """
+    video_path = Path(args.video)
+    if not video_path.is_file():
+        print(f"[FAIL] 视频不存在：{video_path}", file=sys.stderr)
+        return 2
+
+    backend_name = args.backend
+    try:
+        backend = pub.make_publish_backend(backend_name)
+    except pub.PublishError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 2
+
+    if backend_name == "mock":
+        print("[MOCK] 模拟发布：不会产生任何真实上传，也不算 DONE。", file=sys.stderr)
+    else:
+        if not backend.is_configured():
+            missing = [
+                k for k in getattr(backend, "REQUIRED_ENV", ())
+                if not os.environ.get(k)
+            ]
+            print(
+                f"[FAIL] {backend_name} 凭据缺失：{', '.join(missing) or '(未知)'}。"
+                "\n       Auth 域硬失败，不会静默退回 mock。"
+                "\n       申请路径：Google Cloud Console → API & Services → Credentials "
+                "→ Create OAuth 2.0 Client ID → 启用 YouTube Data API v3 → "
+                "首次 OAuth 授权后保存 refresh_token。",
+                file=sys.stderr,
+            )
+            return 2
+
+    tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
+    try:
+        result = backend.upload_video(
+            video_path,
+            title=args.title,
+            description=args.description,
+            tags=tags,
+            privacy=args.privacy,
+        )
+    except pub.PublishAuthError as exc:
+        print(f"[FAIL] 认证失败：{exc}", file=sys.stderr)
+        return 1
+    except NotImplementedError as exc:
+        print(f"[FAIL] {backend_name} 后端尚未实装：{exc}", file=sys.stderr)
+        return 1
+    except pub.PublishError as exc:
+        print(f"[FAIL] 发布失败：{exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"[OK] backend={backend_name} video_id={result.video_id} "
+        f"status={result.status} url={result.url}",
+        file=sys.stderr,
+    )
+    if args.json_out:
+        Path(args.json_out).write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[PUBLISH] 结果 JSON -> {args.json_out}", file=sys.stderr)
+    return 0
 
 
 def cmd_validate(args: argparse.Namespace) -> int:

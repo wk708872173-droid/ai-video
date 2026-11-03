@@ -82,3 +82,28 @@
   1. 任何**被测代码会写** `os.environ` 的测试，都要带 `isolated_env`（或自己 snapshot/restore）—— 只靠 `monkeypatch` 不安全
   2. "单独跑绿、全量跑红" 通常是**环境/全局状态泄漏**，不是随机性：先怀疑 `os.environ` / `sys.path` / cwd / 全局单例
   3. `monkeypatch.delenv(k, raising=False)` 不等于"测试后这个键会被清掉"
+
+## L-015 真 API 路径从未烟测 → 4 个缺陷叠到"看起来能跑"
+- 时间：2026-11-03（V5.0 Batch 1）
+- 现象：用户更新 `.env` 的 API key 后验收，`script --backend minimax`
+  **真实路径从未成功跑通**。测试全绿（1306 项），因为**全部走 mock**。
+  PRD 里 `R1 [UNVERIFIED]`（端点/模型/响应结构未核实）一直是准确的。
+- 根因：**4 个缺陷叠加**，任意一个单独存在都足以让真路径失败：
+  1. prompt 与 schema 自相矛盾（要求"30 镜头"但 schema 没有 shots 字段）
+     → 模型为自洽疯狂推理
+  2. 请求体没有 `response_format` —— 提示词里写"输出严格 JSON"只是祈使句
+  3. 推理模型内联 `<think>` 块 → JSON 解析必失败
+  4. `max_tokens` 与 `timeout` 太小 → 推理吃光预算 → content 空 / 请求超时
+  加上渲染层一个缺陷：`{{ }}` 转义没还原 → 模型看到非法 JSON 语法
+- 修复：全部 5 处；默认模型不变（M3 + think 剥离即可用），
+  更快的 `MiniMax-M3.1-Flash` 可用 env 切换。
+- 对账动作：
+  1. **每个外部服务集成都至少要有一次真端到端烟测**，且要留一份
+     可复跑的脚本 —— mock 永远证明不了真实端点的行为（CLAUDE.md R2）
+  2. 提示词与输出 schema 是**一对契约**：prompt 里要求的每个产物，
+     schema 里都得有对应字段；反过来 schema 里有的字段，prompt 也要提。
+     不一致会让推理模型陷入"怎么自洽"的死循环
+  3. 推理模型（带 `<think>` / `reasoning_content` 的）**必须**：
+     剥推理块 + 留足 `max_tokens` + 把 timeout 调到推理级（≥180s）
+  4. 「输出严格 JSON」这种祈使句**不是约束** —— 要用请求体的
+     `response_format={"type":"json_object"}`

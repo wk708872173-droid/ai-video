@@ -34,7 +34,7 @@ V3.5 给 `Shot` 加了 12 个 director 字段（`lens` / `lighting` / `depth_of_
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 # ---------- Stable Cinemetrics：4 类正交控制分类 ----------
@@ -68,9 +68,12 @@ STATIC_VISUAL_FIELDS: tuple[str, ...] = (
 )
 
 # 动态叙事条件（→ I2V / motion prompt）用到的字段
+# V5.0 Batch 1：加入 `continuity_from_prev` —— 叙事记忆此前**有 schema 无消费**
+#   （`Shot.continuity_from_prev` 只被 `scripts/explain_story.py` 打印给人看，
+#   从不进任何 prompt）。加上后"与前一镜的衔接"才真正影响下一镜的生成。
 DYNAMIC_NARRATIVE_FIELDS: tuple[str, ...] = (
     "subject_action", "camera_motion", "screen_direction", "pacing",
-    "transition_in", "emotion_arc_point",
+    "transition_in", "emotion_arc_point", "continuity_from_prev",
 )
 
 # 色彩锁定关键词 → 归一化色基调（用于跨镜连续性门禁 / 后期 LUT）
@@ -102,10 +105,16 @@ class DirectorBrief:
     screen_direction: str = ""
     narrative_beat: str = ""
     used_fields: tuple[str, ...] = field(default_factory=tuple)
+    # V5.0 Batch 1：自校验结果落点。此前 `validate_director_brief()` 已实现
+    #   且有单测，但生产零调用；且 `brief_for_shot` 的 docstring 声称
+    #   "规划 + 自校验"而实现里根本没调它 —— **docstring 与实现不符**。
+    #   现在自校验结果直接挂在这个对象上，调用方不必再调一次。
+    issues: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["used_fields"] = list(self.used_fields)
+        d["issues"] = list(self.issues)
         return d
 
     @property
@@ -260,6 +269,21 @@ def plan_director_brief(
         dynamic_parts.append(f"[节拍:{narrative_beat}]")
     if transition_in:
         dynamic_parts.append(f"[转场:{transition_in}]")
+    # V5.0 Batch 1：叙事记忆真正进 prompt。
+    #   `continuity_from_prev` —— 与前一镜的衔接（自由文本）；此前只被
+    #   `scripts/explain_story.py` 打印给人看，**从不进任何 prompt**，
+    #   于是"有 schema 无消费"。`emotion_arc_point` —— 0..1 紧张度，
+    #   此前在 `DYNAMIC_NARRATIVE_FIELDS` 里挂着但 `plan_director_brief` 也没读。
+    continuity_from_prev = _text(shot, "continuity_from_prev")
+    if continuity_from_prev:
+        dynamic_parts.append(f"[衔接:{continuity_from_prev}]")
+    emotion_arc = _get(shot, "emotion_arc_point", 0.0)
+    try:
+        emotion_val = float(emotion_arc or 0.0)
+    except (TypeError, ValueError):
+        emotion_val = 0.0
+    if emotion_val > 0.0:
+        dynamic_parts.append(f"[张力:{emotion_val:.2f}]")
 
     # ---------- 色彩锁定 ----------
     scene_atmo = _text(scene, "atmosphere") if scene is not None else ""
@@ -316,13 +340,27 @@ def brief_for_shot(
     storyboard: Any = None,
     *,
     style_anchor: str = "",
+    validate: bool = True,
 ) -> DirectorBrief:
-    """便捷入口：规划 + 自校验（有问题时把问题塞进 static_visual 前的告警位）。
+    """便捷入口：规划 + 自校验。
 
-    自校验结果不阻断，只通过 `DirectorBrief.used_fields` 之外的
-    `validate_director_brief()` 暴露给调用方。
+    自校验结果挂在 `DirectorBrief.issues` 上（**只报告，不阻断** ——
+    `validate_director_brief` 的既定语义：上层决定是否阻断）。
+
+    V5.0 Batch 1 修正：本函数此前的 docstring 声称"规划 + 自校验"，
+    实现里却只调 `plan_director_brief`、**从没调过** `validate_director_brief`
+    —— docstring 与实现不符的一例。现在真正校验。
     """
-    return plan_director_brief(shot, storyboard, style_anchor=style_anchor)
+    brief = plan_director_brief(shot, storyboard, style_anchor=style_anchor)
+    if not validate:
+        return brief
+    try:
+        issues = tuple(validate_director_brief(brief))
+    except Exception:
+        issues = ()
+    if not issues:
+        return brief
+    return replace(brief, issues=issues)
 
 
 __all__ = [

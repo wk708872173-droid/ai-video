@@ -292,11 +292,52 @@ def record_result(
     return rec
 
 
+# ---------- 读侧：检索增强提示词注入（V5.0 Batch 1 接线） ----------
+
+def format_lessons(lessons: list[str], *, prefix: str = "[经验]") -> str:
+    """把经验条目格式化成可注入 prompt 的一段文本。
+
+    空列表 → 空串（调用方直接跳过，不污染 prompt）。
+
+    **顺序敏感**：经验放在 prompt **最前面**。这不是审美选择 ——
+    知识库自己的 `mp_0005` 就是这么写的：
+    「色锁写在 description 末尾会失效（模型仍画成两只奶黄）——
+    色彩约束必须放在 prompt 开头」。
+    """
+    items = [str(x).strip() for x in lessons if str(x).strip()]
+    if not items:
+        return ""
+    return " ".join(f"{prefix}{x}" for x in items)
+
+
+def retrieve_lessons(
+    store: MotionParamsStore,
+    query: str,
+    *,
+    limit: int = 3,
+    prefix: str = "[经验]",
+) -> str:
+    """检索经验 → 格式化成 prompt 片段（一步到位）。
+
+    V5.0 Batch 1：此前 `lessons()` / `search()` / `related()` **生产零调用**
+    （只有 tests 引用）—— 知识库"只写不读"，积累的经验从不回灌。
+    这条读侧通路现在接到 `orchestrator._build_task` 的 image_gen / motion_gen 分支。
+    """
+    try:
+        lessons = store.lessons(query, limit=limit)
+    except Exception:
+        # 知识库读失败不该让主流程崩（它是**增强**不是**依赖**）
+        return ""
+    return format_lessons(lessons, prefix=prefix)
+
+
 __all__ = [
     "DEFAULT_KNOWLEDGE_PATH",
     "RELATION_TYPES",
     "SCHEMA_VERSION",
     "MotionParamRecord",
     "MotionParamsStore",
+    "format_lessons",
     "record_result",
+    "retrieve_lessons",
 ]
