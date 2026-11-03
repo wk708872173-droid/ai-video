@@ -229,18 +229,35 @@ def test_f6_step_lint_file_count_covers_all_three_dirs(monkeypatch, capsys):
 
 
 def test_f6_step_lint_reports_syntax_error(tmp_path, monkeypatch, capsys):
-    """真坏文件必须被抓住（否则扩范围只是走过场）。"""
+    """真坏文件必须被抓住（否则扩范围只是走过场）。
+
+    V5.0 Batch 2：**修 flake**。原实现把**整棵树**编译到**同一个** `cfile`
+    （`str(bad) + "c"`）—— 跨文件共享状态：
+      - 每个文件编译成功都会覆写那个 .pyc；
+      - `py_compile` 在 `cfile` 显式给定时不查 up-to-date，但**写盘**仍是共享的；
+      - 更关键的是 `fake_run` 只捕 `PyCompileError`，别的异常类型会**穿透**
+        `step_lint` 让本测试以"异常"而不是"断言"失败（罕见、难复现）。
+
+    改法（**不削弱断言**）：每个文件用**自己的** cfile（放 tmp_path），
+    并把捕获范围放宽到 `Exception` —— 语义是"任何编译失败都算 rc!=0"，
+    与 `step_lint` 真正的判定一致。
+    """
     bad = REPO_ROOT / "tests" / "_tmp_broken_for_lint.py"
     bad.write_text("def broken(:\n", encoding="utf-8")
+    cfile_dir = tmp_path / "pyc"
+    cfile_dir.mkdir(parents=True, exist_ok=True)
     try:
         monkeypatch.setattr(auto_dev, "run", lambda *a, **k: (0, "", ""))
         # 用真实的 py_compile 结果
         import py_compile
         def fake_run(cmd, **k):
+            target = Path(str(cmd[-1]))
+            # 每个目标一个独立 cfile —— 不共享状态
+            cfile = str(cfile_dir / (target.stem + ".pyc"))
             try:
-                py_compile.compile(str(cmd[-1]), cfile=str(bad) + "c", doraise=True)
+                py_compile.compile(str(target), cfile=cfile, doraise=True)
                 return (0, "", "")
-            except py_compile.PyCompileError as exc:
+            except Exception as exc:      # noqa: BLE001 — 任何编译失败都算失败
                 return (1, "", str(exc))
         monkeypatch.setattr(auto_dev, "run", fake_run)
         assert auto_dev.step_lint(None) is False

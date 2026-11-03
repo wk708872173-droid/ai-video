@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hailuo_video.agents import (
+    ALL_AGENTS,
     AgentResult,
     AssetPrepAgent,
     EditingAgent,
@@ -36,6 +37,7 @@ from hailuo_video.agents import (
 from hailuo_video.artifact import Artifact, Registry
 from hailuo_video.log import LogEvent, StructuredLogger
 from hailuo_video.retry import RetryPolicy, with_retry
+from hailuo_video.router import MotionComplexityPolicy, Router
 
 
 # ---------- Public dataclass 保留旧 run_pipeline 字段兼容 ----------
@@ -218,16 +220,45 @@ class PipelineAgent:
         #   此前 `knowledge_store.search/related/lessons` **生产零调用** ——
         #   库在积累但从不回灌。这条缓存是读侧通路的第一步。
         self._knowledge_store = None
-        self._agent_lookup = {
-            "script_writer": ScriptWriterAgent(),
-            "asset_prep": AssetPrepAgent(),
-            "image_gen": ImageGenAgent(),
-            "motion_gen": MotionGenerationAgent(),
-            "video_synth": VideoSynthAgent(),
-            "tts": TTSAgent(),
-            "editing": EditingAgent(),
-            "qa": QAAgent(),
-        }
+        # V5.0 Batch 2：路由层。决策逻辑从 `_run_motion_gen_conditional`
+        #   的函数体搬进 `router.MotionComplexityPolicy`，决策**带理由**落日志。
+        self._router = Router(
+            on_decision=lambda phase, decision: self.logger.event(
+                "route_decision",
+                phase=phase,
+                target=decision.target,
+                reason=decision.reason,
+                evidence=decision.evidence,
+                confidence=decision.confidence,
+            )
+        )
+        self._router.register("motion_gen", MotionComplexityPolicy())
+        # V5.0 Batch 2：单一 agent 注册表。
+        #   此前 `agents.ALL_AGENTS` 与 `orchestrator._agent_lookup` 是**两份**同样的
+        #   8 个 agent —— 改一处忘另一处就会出现"某个 agent 行为不一致"。
+        #   现在 `_agent_lookup` 从 `ALL_AGENTS` 派生。
+        self._agent_lookup = {a.name: a for a in ALL_AGENTS}
+        # V5.0 Batch 2：启动时校验 DAG（消费 `Phase.inputs_from` 这个死字段）。
+        #   只告警不 raise —— 现有顺序是正确的，改成 raise 会炸掉所有旧调用方。
+        self._dag_report = self._validate_dag()
+
+    def _validate_dag(self):
+        """校验 DEFAULT_DAG：拓扑序 / 环 / 依赖缺失 / 顺序违规 / agent 存在性。"""
+        try:
+            from hailuo_video.dag import validate_dag
+            report = validate_dag(
+                DEFAULT_DAG,
+                known_agents=[a.name for a in ALL_AGENTS],
+            )
+        except Exception as exc:
+            return None
+        if not report.ok:
+            self.logger.event(
+                "dag_invalid",
+                issues=[i.to_dict() for i in report.issues],
+                reason="DEFAULT_DAG 的声明顺序 / 依赖与 inputs_from 不一致",
+            )
+        return report
 
     # ---------- V5.0 Batch 1：project_id 派生 ----------
 
@@ -374,19 +405,23 @@ class PipelineAgent:
         return steps
 
     def _run_motion_gen_conditional(self, ctx: dict) -> list[PipelineStep]:
-        """V3.1 motion_gen conditional phase：按 budget 选 top-N shots 跑真 AI 视频。"""
-        from hailuo_video import motion_backend as mb_mod
+        """V3.1 motion_gen conditional phase：按 budget 选 top-N shots 跑真 AI 视频。
+
+        V5.0 Batch 2：**决策逻辑搬进路由层**（`router.MotionComplexityPolicy`），
+        这里是逐行等价重构 —— 同样的排序、同样的截断、同样的 static 排除。
+        区别是**决策过程现在可解释**：路由层返回的 `RouteDecision.reason`
+        与 `evidence` 会落进 `log.jsonl` 的 `route_decision` 事件。
+        """
         sb = ctx["storyboard"]
-        # 收集所有 candidate shots（motion_complexity != static）
-        candidates = []
-        static_shots: list[int] = []
-        for i, shot in enumerate(sb.shots):
-            mc = getattr(shot, "motion_complexity", "static") or "static"
-            if mc == "static":
-                static_shots.append(i)
-                continue
-            priority = 1 if mc == "complex" else 0
-            candidates.append((priority, i, shot))
+        budget = getattr(self.config, "motion_budget", 3)
+        decision = self._router.decide("motion_gen", {
+            "storyboard": sb,
+            "budget": budget,
+        })
+        if decision is None:
+            return []
+        selected = list(decision.selected)
+        static_shots = list(decision.skipped)
         # V3.8 缺陷 2：static shot 被排除 = 该镜头**不会**调用 Hailuo，
         #   而是走 Ken Burns 兜底（不烧 quota，也没有真 AI 运动，只有慢推慢拉的伪运动）。
         #   旧行为完全静默——CLI 只打一行 "[OK] shot_003.mp4 (0 bytes, 19.1s)"，
@@ -400,17 +435,17 @@ class PipelineAgent:
                 reason="motion_complexity=static → Ken Burns 兜底（非真 AI 运动）",
             )
         ctx["static_skipped_shots"] = static_shots
-        # 按 priority 降序；同 priority 按 index 升序
-        candidates.sort(key=lambda t: (-t[0], t[1]))
-        # 截取 budget
-        budget = getattr(self.config, "motion_budget", 3)
-        chosen = candidates[:budget]
-        if not chosen:
+        if not selected:
             return []  # 无 candidate → 此 phase 跳过（normal）
         self.logger.event("phase_started", phase="motion_gen",
-                          candidate_count=len(candidates), budget=budget, chosen=len(chosen))
+                          candidate_count=int(decision.evidence.get("candidate_count", 0)),
+                          budget=budget, chosen=len(selected))
         steps: list[PipelineStep] = []
-        for priority, shot_idx, shot in chosen:
+        shots = list(getattr(sb, "shots", []) or [])
+        for shot_idx in selected:
+            shot = shots[shot_idx] if shot_idx < len(shots) else None
+            if shot is None:
+                continue
             image_art = next((a for a in self.registry.by_kind_iter("image")
                               if a.metadata.get("shot_idx") == shot_idx), None)
             image_path = str(image_art.path) if image_art else ""
