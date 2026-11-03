@@ -634,3 +634,94 @@
 - 连带修复：`knowledge_store.lessons()` 只被**同模块**的 `retrieve_lessons()`
   调用 → 门禁的"模块内链路"必须被承认（否则合法链路被误报）；
   判据定为「符号在生产代码里被 AST 引用」+「定义模块被 import」。
+
+## D-041 成片从不落到用户请求的 `-o` 路径（V3.4 起的老 bug）
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`orchestrator._build_task` 的 editing 分支恒写
+  `run_dir/final.mp4`，**从不拷贝到 `run()` 的 `output` 参数**。
+  于是 `pipeline -o out/final.mp4` 的产物落在 `<run_dir>/final.mp4`，
+  而 CLI 报的是 `out/final.mp4 (0 bytes)` —— **报成功但用户要的路径上什么都没有**。
+  引入于 V3.4（`8379da1`）。
+- 连带发现：`PipelineResult.bytes` **从未赋值**（恒 0）→ CLI 永远打印 "(0 bytes)"，
+  看起来像"产出了空文件"，掩盖了上面那个问题。
+- 决策：
+  1. editing 成功后把 `run_dir/final.mp4` 拷到 `output`（两者不同才拷）
+  2. `PipelineResult.bytes` 按实际文件大小赋值（成功与 motion_fallback 两条路径都补）
+  3. CLI 加最后一道闸：**0 字节 / 文件不存在 → 显式失败**（R4 不静默降级）
+- 验证：`tests/test_checkpoint.py` 的 `test_cli_fails_when_output_missing`；
+  真跑一次 pipeline → 成片落到请求的路径，23905 bytes。
+
+## D-042 pipeline CLI 只能打真实 Hailuo（试跑即烧额度）
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**（已实施）
+- 上下文：`--image-backend mock --tts-backend mock` **不影响 motion 阶段** ——
+  任何一次 pipeline 试跑都会提交真 Hailuo 任务、烧掉当天 3 条/天额度。
+  本轮实测踩到：提交 3 条真视频，用光 Token Plan Max 的 3/3 配额
+  （MiniMax 随后返回 `status_code 2067 当前已达到 Token Plan 用量上限`）。
+- 决策：
+  1. 新增 `--motion-backend {minimax,mock}`（**默认 minimax**，不改生产行为）
+  2. `PipelineConfig.motion_backend` + `run_pipeline_v3(motion_backend=)` 贯通
+  3. `MockMotionBackend` 不再要求 API key（mock 不该因为没配 key 就失败）
+  4. **连带**：`motion_gen` phase 自己造 task（不走 `_build_task`），
+     必须显式带 `motion_backend` —— 漏了它 mock 形同虚设、照样烧额度
+- 教训：L-016。
+
+## D-043 「AI Agent 框架」逐条映射与判定（V5.0 主产出）
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**
+- 上下文：用户给出「AI Agent 搭建流程图」，要求按图重构与设计。
+- 决策：**不做架构重构**。把图当**检查清单**用 —— 逐条打分，该补的补、不该补的砍。
+  判定：8 项该补（已补）、3 项明确不补（LangGraph / 8 stage 全 agent 化 /
+  OTel+容器化）、1 项部分补（框架与模型选型）。
+- 关键判断（写进代码，不只写进文档）：
+  1. **8 个 stage 里只有 `script_writer` 调 LLM** → 断言
+     `llm_roles() == ["script_writer"]`（有人往确定性 stage 塞 LLM 决策会撞上它）
+  2. 主体流程**不该 agent 化** —— Hailuo 3 条/天、image-01 按张计费、
+     交付物要可复现。强行 agent 化 = 架构退化
+  3. 需要 MAS 的**部分**（路由 / 审计）→ 抽 `router.py`（决策带 reason/evidence）
+- 产出：`docs/AGENT_FRAMEWORK.md`（逐条映射 + 判定 + file:line 证据 + 架构对比图）。
+
+## D-044 成本治理：配额账本收敛为单一实现
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**（已实施）
+- 上下文（真实缺陷）：配额记账**只存在于 `scripts/daily_cron.py`**：
+  - 绕过 cron 直接跑 pipeline → **计数器与真实消耗完全脱钩**
+  - `motion_budget` 只是**单次 run 内**的 top-N 截断，不是每日计数器
+  - **image / tts 完全无限额、无计数器** —— 最常调用的接口零预算约束
+  - cron 与编排器侧是**两套实现**，会漂移
+- 决策：
+  1. 新增 `sandbox/hailuo_video/quota.py` —— image/video/tts **三类统一记账**，
+     按日 reset、原子写；**记账点在编排器**（调 backend 之前 consume）
+  2. `daily_cron.py` 删掉自带的那份 `QuotaRecord`/`load_quota`/`save_quota`
+     → **单一实现**；CLI 默认 `--quota-file run/quota.json`（与 cron 同一份）
+  3. cron 改成**兜底记账者**：编排器已记则不重复记，没记才 +1
+     （否则跑一次算 2 → 额度提前耗尽）
+  4. 额度不足 → **跳过该 agent + 明确 reason**（写进 consistency + CLI [WARN]），
+     **不静默截断**
+  5. 账本损坏 → **硬失败**（成本域按密钥域处理：静默重建 = 把"已用 3 条"
+     当成"已用 0 条" → 直接超支）
+- schema 向后兼容：`hailuo_calls_used` / `daily_budget` 仍是**真字段**，
+  旧调用面（`QuotaRecord(hailuo_calls_used=...)` / `rec.hailuo_calls_used`）不变。
+- 验证：`tests/test_quota_observability.py`（22 项）。
+
+## D-045 人机协同节点的默认策略
+- 决策日期：2026-11-03
+- 状态：**ACCEPTED**（已实施）
+- 上下文：全仓 `grep "input(|confirm|--yes|approve|interactive"` → **0 命中**，
+  全流程 fire-and-forget。客户第 1 优先级是「无人值守生产」，第 3 是「画面质量」——
+  全自动保住了前者，但**质量问题的反馈点太晚**（image-01 按张计费，
+  参考图长相对不对应该人看一眼再往下跑）。
+- 决策：
+  1. 新增 `checkpoint.py` —— 跑到检查点**干净停下**（`source="checkpoint"`，
+     `ok=True`，CLI 退出码 **3** = 暂停待确认），产出人读报告
+  2. **复用既有 resume 机制**（`registry.json` + `--resume-from`），不引入新机制
+  3. **默认只开 `prep`**（参考图确认）：整条链路里最贵（每角色 7 张图）
+     也最容易出错（"小黄变猫"事故就发生在那）的一步
+  4. `daily_cron.py` **显式 `--checkpoint none`** —— 无人值守生产不能等人确认。
+     否则 cron 会"跑完 prep 就停"（exit 3）—— 看起来成功但没有成片
+  5. 库层 `PipelineConfig.checkpoint_phases` 默认 `()`（关闭），
+     **保持既有调用方行为不变**；CLI 层默认 `prep`
+- 实测价值：在 `sample/story_arc_xiaohuang_daily/day1.json` 上跑，
+  报告自动抓出「小黄」是中文歧义色词 + 与 appearance 的犬种描述冲突
+  —— **正是那个客户事故的成因**，在烧掉下游链路之前拦住了。

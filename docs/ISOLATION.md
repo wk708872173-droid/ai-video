@@ -1,9 +1,11 @@
-# V4.0 Architecture — Project 隔离设计
+# V5.0 Architecture — Project 隔离设计
 
 > 创建于 2026-10-14（V3.4 W3 rerun 成功之后）
 > 目的：保证**切换剧本/角色时输出稳定、互不污染**，支持持续完成多人任务。
 >
-> **2026-10-26 更新**：标题随架构版本升到 V4.0。**隔离设计本身自 V3.5 起未变**
+> **2026-11-03 更新**：标题随架构版本升到 V5.0。**隔离设计本身自 V3.5 起未变**
+> （V5.0 的全部改动都在隔离之外：路由层 / 人机协同 / 配额账本 / 角色契约 /
+> 提示词版本 / 工具注册表 / Benchmark —— 详见 `docs/AGENT_FRAMEWORK.md`）。
 > （ADR-007 的 namespace 派生、env_overrides、cleanup 语义都保持原样）；
 > V4.0 只是在隔离之上补了全局角色圣经（`sandbox/assets/character_bible/`，**刻意在
 > 项目 namespace 之外** → cleanup 不会误删）。

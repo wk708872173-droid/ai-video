@@ -137,8 +137,18 @@ python -m hailuo_video --help
 | `editing` | 后期处理（5 种 mode） | `editing --mode full --input a.mp4 --output b.mp4` |
 | `validate` / `check-assets` / `consistency-check` | schema 校验 / 缺料清单 / 色差度量 | `validate sb.json` |
 | `review` | VLM 画面评审（**默认 mock，零网络调用**） | `review shot_001.jpg --output report.json` |
+| `publish` | 发布成片（mock 显式标注；youtube 需凭据） | `publish final.mp4 --title "标题" --backend mock` |
 
 每个命令都支持 `--backend mock`（单测假数据，不调真 API）。
+
+### V5.0 新增的 CLI 选项
+
+| 选项 | 作用 |
+|---|---|
+| `pipeline --checkpoint prep,editing` | **人机协同节点**：跑到该 phase 后干净停下，产出确认报告，人确认后 `--resume-from <下一个 phase>` 续跑（退出码 3 = 暂停待确认；`none` = 全关） |
+| `pipeline --motion-backend mock` | 视频阶段用 mock —— **试跑不烧 Hailuo 额度**（3 条/天） |
+| `pipeline --quota-file run/quota.json` | 配额账本路径（默认与 `daily_cron` 同一份 → 手动跑与定时跑都记账） |
+| `pipeline --resume-from <phase>` | 续跑起点（choices 从 `DEFAULT_DAG` 派生，覆盖全部 8 个 phase） |
 
 ### V3.8 新增的关键能力
 
@@ -156,6 +166,25 @@ python -m hailuo_video --help
 | **成片带配音与字幕** | 自动 | 此前 V3 editing 只处理画面，TTS 产物被丢在 registry 没人消费 —— 实测 9 个已交付成片有 8 个无音轨；现在每镜烧字幕 + 混旁白 |
 | **多镜产物隔离** | 自动 | 此前固定 artifact_id 让每镜产物互相覆盖（3 镜只剩 1 镜）；现在按 shot 隔离，editing 每镜只选一段（motion 优先） |
 | **场景参考图不再被挤掉** | 自动 | 参考图优先级改为 角度→场景→表情（双角色镜头下场景锚定不再丢失） |
+
+### V5.0 新增的关键能力（按「AI Agent 搭建流程图」逐条映射）
+
+> 完整映射与判定见 **[docs/AGENT_FRAMEWORK.md](docs/AGENT_FRAMEWORK.md)**。
+> 结论：**不做架构重构**（8 个 stage 里只有 `script_writer` 调 LLM），
+> 把图当检查清单用 —— 8 项该补、3 项明确不补。
+
+| 能力 | 怎么用 | 说明 |
+|---|---|---|
+| **人机协同节点** | `pipeline sb.json -o out.mp4 --checkpoint prep` | 跑到参考图生成后停下，产出「角色长相对不对」确认报告（含名字歧义告警）；确认后 `--resume-from script` 续跑。退出码 3 = 暂停待确认 |
+| **决策可解释** | 自动 | 路由层把选镜决策抽成 `RouteDecision`（带 reason/evidence），落进 `log.jsonl` 的 `route_decision` 事件 |
+| **配额统一记账** | 自动（`--quota-file`） | image/video/tts 三类统一记账，记账点在编排器 —— **绕过 cron 也会记**；额度不足 → 跳过 + 明确告警，不静默截断 |
+| **run_id 贯穿日志** | 自动 | `log.jsonl` 每个事件 + `registry.json` 的 meta 块都带 run_id；补上此前从未 emit 的 agent 级事件 |
+| **聚合指标** | `PipelineResult.metrics` | per-phase 调用数/成功率/耗时 + 成本估算（相对单位） |
+| **角色契约** | 自动 | 每个 stage 的职责/输入/输出/**禁则**/**降级策略**变成可校验的数据（`roles.py`） |
+| **提示词版本化** | `prompt_registry` | 每版提示词有稳定 id + 版本号 + 内容哈希 → 事后能回答"这条成片是哪个提示词产的" |
+| **工具注册表** | `tools.py` | 现有确定性能力登记成声明式工具（带成本标注）；MCP 作为 provider 收编 |
+| **Benchmark / AB** | `bench.py` | 3 个固定 fixture 跑完整流程比指标（**全 mock、零网络、零额度**）—— Hailuo 3 条/天做不了真 API A/B，这是唯一可行路径 |
+| **真 LLM 路径真跑通了** | `script novel.txt -o sb.json --backend minimax` | 此前 4 个缺陷叠加导致真路径从未成功（PRD 的 `R1 [UNVERIFIED]` 是准确的）；现在真 API 端到端跑通，审计日志首次真正产出 |
 
 ---
 
@@ -291,6 +320,8 @@ python -m pytest tests/ -q
 ---
 
 ## 📚 进一步阅读
+
+- [docs/AGENT_FRAMEWORK.md](docs/AGENT_FRAMEWORK.md) — 「AI Agent 搭建流程图」逐条映射与判定（V5.0）
 
 - **[`FRAMEWORK.md`](FRAMEWORK.md)** — RMAP 完整方法论（3 大一致性层 + 4 轴 picker + 缓存布局 + 失败模式表）
 - **[`storyboard_template.json`](storyboard_template.json)** — 标准模板（带必填字段标注）

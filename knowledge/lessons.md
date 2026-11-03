@@ -107,3 +107,67 @@
      剥推理块 + 留足 `max_tokens` + 把 timeout 调到推理级（≥180s）
   4. 「输出严格 JSON」这种祈使句**不是约束** —— 要用请求体的
      `response_format={"type":"json_object"}`
+
+## L-015 提示词与输出 schema 是一对契约，不一致会让推理模型陷入死循环
+- 时间：2026-11-03（V5.0 Batch 1）
+- 现象：真 API 跑 `script --backend minimax` **从未成功**。4 个缺陷叠加，
+  任意一个单独存在都足以失败；而 1400+ 个 pytest 用例**全绿** —— 因为**全走 mock**。
+- 根因（最隐蔽的一个）：`NOVEL_TO_SCRIPT_PROMPT` 要求"改编为一段 **30 镜头**的漫剧剧本"，
+  但输出 schema **没有 shots 字段**（分镜是第 3 步才生成的）。
+  推理模型为自洽疯狂推理 → 4096 token 被推理吃光 → `finish_reason=length`
+  → content 为空 → "LLM 返回为空"。
+- 修复：prompt 改"只写场景级剧本" + 显式"不要写分镜表"；`max_tokens` 4096→8192；
+  `timeout` 60→180；请求体加 `response_format={"type":"json_object"}`；
+  解析前剥 `<think>`；渲染器还原 `{{}}` 转义。
+- 对账动作：
+  1. **每个外部服务集成都至少要有一次真端到端烟测**，且留一份可复跑脚本 ——
+     mock 永远证明不了真实端点的行为（CLAUDE.md R2）
+  2. 提示词里要求的每个产物，schema 里都得有对应字段；反过来 schema 里有的字段，
+     prompt 也要提。不一致 = 推理模型的死循环
+  3. 推理模型（带 `<think>` / `reasoning_content`）必须：剥推理块 + 留足
+     `max_tokens` + timeout 调到推理级（≥180s）
+  4. 「输出严格 JSON」是**祈使句不是约束** —— 要用请求体的 `response_format`
+
+## L-016 「mock 开关」必须覆盖**所有**计费后端，否则等于没有
+- 时间：2026-11-03（V5.0 Batch 3）
+- 现象：`--image-backend mock --tts-backend mock` 让 pipeline 试跑时
+  **仍提交了 3 条真 Hailuo 视频**，用光当天 3/3 配额
+  （MiniMax 返回 `status_code 2067 当前已达到 Token Plan 用量上限`）。
+- 根因（两层）：
+  1. CLI **根本没有** `--motion-backend` —— 视频阶段只能打真后端
+  2. 加了开关之后**仍然失效**：motion_gen phase 自己造 task dict（不走 `_build_task`），
+     **漏了 `motion_backend`** → agent 回落到真后端
+- 修复：新增 `--motion-backend`；`_run_motion_gen_conditional` 显式带上
+  `motion_backend` + `shot_idx`。
+- 对账动作：
+  1. 加 mock 开关时，**逐个 phase 查**「这个 phase 的 task 从哪来」——
+     自己造 task 的 phase 不会自动继承全局配置
+  2. mock 开关必须有**测试断言**它真的被调用（`assert sentinel.calls`），
+     而不是只断言「参数能解析」
+  3. **计费域的任何真实调用前，先问"这一步是 mock 吗"**
+
+## L-017 `bytes` 恒 0 会掩盖「产物没落盘」
+- 时间：2026-11-03（V5.0 Batch 3）
+- 现象：CLI 报 `[OK] out/final.mp4 (shots=3, 0 bytes, 7.9s)` ——
+  而 `out/final.mp4` **根本不存在**（真产物在 `run_dir/final.mp4`）。
+- 根因：`PipelineResult.bytes` **从未赋值**（恒 0），且 CLI 用它当"成功"的样子。
+  0 bytes 看起来像"产出了空文件"，**掩盖了"路径错了"这个真问题**。
+- 修复：按实际文件大小赋值 + CLI 加闸（0 字节 / 文件不存在 → 显式失败）。
+- 对账动作：任何"成功"输出里出现的**数字**，都必须从真实数据算出来。
+  恒定值（0 / None / ""）出现在报告里 = 有人在糊弄。
+
+## L-018 门禁绿 ≠ 门禁跑对了（第二次）
+- 时间：2026-11-03（V5.0 Batch 2）
+- 现象：`tests/test_legacy_fixes_f1_f6.py::test_f6_step_lint_reports_syntax_error`
+  在门禁里**偶发失败**（约 1/10），单独跑 8 次全绿。
+- 根因：测试把**整棵树**编译到**同一个** `cfile`（跨文件共享状态），
+  且 `fake_run` 只捕 `PyCompileError` —— 别的异常类型会**穿透** `step_lint`，
+  让本测试以"异常"而不是"断言"失败。
+- 修复：每个文件用**自己的** cfile（放 tmp_path）+ 捕获范围放宽到 `Exception`
+  （语义 = 任何编译失败都算 rc!=0，与 `step_lint` 真实判定一致）。
+- 对账动作：
+  1. **共享可变状态**（同一个临时路径 / 全局单例 / 环境变量）是间歇性失败的
+     第一嫌疑人 —— "单独跑绿、全量跑红"通常就是它
+  2. 修法是**消除共享状态**，不是加重试或加 sleep
+  3. 断言失败与异常失败要分清：测试该断言行为，不该被底层异常打断
+- 关联：L-014（同一类：环境/全局状态泄漏）。

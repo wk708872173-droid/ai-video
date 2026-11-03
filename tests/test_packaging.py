@@ -51,7 +51,7 @@ def test_declared_version_matches_dunder_init(pyproject):
     这里锁的是"与 docs/ISOLATION.md 的架构版本对齐"，不是钉死某个字符串 ——
     真要升版时改 __init__ 与本断言即可，但别让它再悄悄落后于架构版本。
     """
-    assert hailuo_video.__version__ == "4.0.0"
+    assert hailuo_video.__version__ == "5.0.0"
     isolation = (REPO_ROOT / "docs" / "ISOLATION.md").read_text(encoding="utf-8")
     major_minor = ".".join(hailuo_video.__version__.split(".")[:2])
     assert f"V{major_minor}" in isolation, (

@@ -473,6 +473,15 @@ AI 负责提示词与剪辑（ScriptWriterAgent + EditingAgent）
 | BUG-123 | 🟠 中 | **secret scan 把凭据本身打进日志**（打的是 `m.group()[:30]` = 密钥前 30 字符），且 CI 上工作树干净时扫描**完全空转** | ✅ **V3.9 已修**。改为只打 `***REDACTED***``；diff 为空时退化为整仓扫描 |
 | BUG-124 | 🟠 中 | **`dev` extra 缺 `pytest-cov`** —— 门禁覆盖率步骤用 `--cov`，缺它那步跑不起来 → CI 会因"解析失败"而红 | ✅ **V3.9 已修**。`dev = ["pytest>=7.0", "pytest-cov>=4.0"]` |
 | BUG-125 | 🟡 中 | **全片所有角色与旁白共用一个音色**（`task["voice"]` 是全局值）→ 与"角色一致性"核心价值主张冲突 | ✅ **V3.9 已修**（REQ-403）。按说话角色分配，探测式保证同片子内不撞音色 |
+| BUG-132 | 🔴 高 | **真 LLM 路径从未跑通**：4 个缺陷叠加 —— prompt 与 schema 自相矛盾（要求"30 镜头"但 schema 无 shots 字段）→ 模型疯狂推理 → 推理吃光 `max_tokens` → `finish_reason=length` → content 空；加上请求体缺 `response_format`、推理模型内联 `<think>` 泄漏、60s 超时打掉 95s 的成功请求、渲染层 `{{}}` 转义没还原。PRD 的 `R1 [UNVERIFIED]` 是准确的 —— 测试全绿但**全走 mock** | ✅ **V5.0 已修**（D-039）。真 API 端到端跑通（`script --backend minimax` → `title='橘猫望天'`），审计日志首次真正产出 |
+| BUG-133 | 🔴 高 | **成片从不落到用户请求的 `-o` 路径**：editing 恒写 `run_dir/final.mp4`，从不拷贝；CLI 报 `[OK] out/final.mp4 (0 bytes)` —— 报成功但用户要的路径上什么都没有 | ✅ **V5.0 已修**（D-041）。editing 成功后拷到 output；CLI 加闸：0 字节/文件不存在 → 显式失败 |
+| BUG-134 | 🟠 中 | **`PipelineResult.bytes` 从未赋值**（恒 0）→ CLI 永远打印 "(0 bytes)"，看起来像"产出了空文件" | ✅ **V5.0 已修**（D-041）。按实际文件大小赋值 |
+| BUG-135 | 🔴 高 | **pipeline CLI 只能打真实 Hailuo**：`--image-backend mock --tts-backend mock` 不影响 motion 阶段 → 任何试跑都烧掉当天 3 条/天额度（本轮实测踩到，用光 3/3） | ✅ **V5.0 已修**（D-042）。新增 `--motion-backend {minimax,mock}`；motion_gen task 显式带 `motion_backend`（否则 mock 形同虚设） |
+| BUG-136 | 🟠 中 | **`--resume-from` 拒绝 `script`/`motion_gen`/`editing`**：choices 写死且含 V3.2 已改名的 `concat` → checkpoint 的续跑起点会被 argparse 直接拒掉 | ✅ **V5.0 已修**（D-043）。choices 从 `DEFAULT_DAG` 派生 |
+| BUG-137 | 🟠 中 | **生产审计零产出**：`audit_llm` 有完整实现 + 27 个测试，但生产从不传 `project_id` → `if project_id:` 恒假 → **一条审计日志都不产生** | ✅ **V5.0 已修**（D-039）。`project_id` 透传到 3 次 LLM 调用；真 API 跑一次产出 3 对 request/response |
+| BUG-138 | 🟠 中 | **知识库只写不读**：`search`/`related`/`lessons` 生产零调用 → 8 条真实生产经验（色词歧义 / 9:16 原生出图 / 色锁要放 prompt 开头…）从不回灌给模型 | ✅ **V5.0 已修**（D-040）。读侧接进 image/motion prompt；`continuity_from_prev`/`emotion_arc_point` 一并接线（此前有 schema 无消费） |
+| BUG-139 | 🟠 中 | **配额绕过 cron 即脱钩**：记账只在 `daily_cron.py`，`motion_budget` 只是单 run 内的 top-N 截断，**image/tts 完全无限额** | ✅ **V5.0 已修**（D-044）。`quota.py` 三类统一记账（image/video/tts），记账点在编排器；cron 改为兜底记账者（不重复计数） |
+| BUG-140 | 🟢 低 | **`mcp_client`(266 行) / `publish_agent`(251 行) 整个模块零生产引用**；`audit_llm.audit_chat_call`、`ProjectRegistry`、`validate_director_brief` 同类 | ✅ **V5.0 已修**（D-040/D-043）。mcp 收编为 tools provider；publish 接 CLI 子命令；自校验接进 `_apply_director_briefs` |
 | BUG-126 | 🟡 中 | **无 CI**：仓库从未有 GitHub Actions —— 门禁只在本地跑，回归靠人记 | ✅ **V3.9 已修**。`.github/workflows/ci.yml` 跑**同一个** `scripts/auto_dev.py`（py3.11/3.13）+ 可选 pre-commit hook |
 
 > 新发现的疑似问题请直接加在此表，并在 §变更日志 留 entry。
