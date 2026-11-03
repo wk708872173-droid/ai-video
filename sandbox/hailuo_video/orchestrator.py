@@ -71,8 +71,12 @@ class PipelineResult:
 
     @property
     def ok(self) -> bool:
-        """V3.2 自动开发冲刺（轮 6）补：与 pipeline.PipelineResult 接口对齐。"""
-        return self.source == "ok"
+        """V3.2 自动开发冲刺（轮 6）补：与 pipeline.PipelineResult 接口对齐。
+
+        V5.0 Batch 3：`"checkpoint"` 也算 ok —— **停下来等人确认是"成功暂停"，
+        不是失败**（成片还没生成，但也没有任何东西出错）。
+        """
+        return self.source in ("ok", "checkpoint")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +122,12 @@ class PipelineConfig:
     keep_intermediate: bool = True
     parallel: int = 1
     motion_budget: int = 3                     # V3.1：MiniMax Max 默认每天 3 次 hailuo-2.3
+    # V5.0 Batch 3：motion backend 可注入。
+    #   **为什么要这个字段**：`pipeline` CLI 此前**只能打真实 Hailuo** ——
+    #   `--image-backend mock --tts-backend mock` 并不影响 motion 阶段，
+    #   任何一次 pipeline 试跑都会**烧掉当天的 3 条/天额度**（本轮实测踩到）。
+    #   None = 用真后端（保持生产行为不变）；CLI 的 `--motion-backend mock` 可显式换掉。
+    motion_backend: Any = None
     # V3.8 W4：运动参数知识库落盘路径。None = **不记录**（默认关闭）。
     #   默认关闭的原因：写库是副作用，且默认路径在仓库内（knowledge/motion_params.json）
     #   —— 测试跑一次就会污染人工维护的种子数据。CLI 显式传入才开启。
@@ -125,6 +135,11 @@ class PipelineConfig:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     log: StructuredLogger | None = None
     run_dir: Path = Path("./run")
+    # V5.0 Batch 3：人机协同节点。空元组 = 不设检查点（**库层默认关闭**，
+    #   保持既有调用方行为不变；CLI 的默认值是 ("prep",)，见 cli.py）。
+    #   注意：`scripts/daily_cron.py` 显式传 `()` —— 无人值守生产不能停在
+    #   等人确认上（客户第 1 优先级）。
+    checkpoint_phases: tuple[str, ...] = ()
     # V3.5 ADR-007：项目级上下文（optional，None = 旧默认行为）
     project_context: Any = None               # ProjectContext 实例
 
@@ -461,6 +476,12 @@ class PipelineAgent:
                 "duration": int(getattr(shot, "expected_duration", 6.0) or 6.0),
                 "resolution": "1080P",
                 "shot_id": shot_idx,
+                # V5.0 Batch 3：**必须**带上 motion_backend ——
+                #   这个 phase 自己造 task（不走 _build_task），
+                #   漏了它 → agent 回落到**真** Hailuo → `--motion-backend mock` 形同虚设，
+                #   照样烧额度（本轮实测踩到：mock 没生效，3 条真视频被提交）。
+                "motion_backend": getattr(self.config, "motion_backend", None),
+                "shot_idx": shot_idx,
             }
             steps.append(self._run_agent_safe("motion_gen", task, "motion_gen", shot_idx))
         return steps
@@ -1009,6 +1030,29 @@ class PipelineAgent:
             else:
                 phase_steps = self.run_phase(phase, ctx)
             all_steps.extend(phase_steps)
+            # V3.4 反回归（2026-10-26 发现）：editing 恒写 `run_dir/final.mp4`，
+            #   **从不拷贝到用户请求的 `-o` 路径** —— 于是
+            #   `pipeline -o out/final.mp4` 的产物落在 `<run_dir>/final.mp4`，
+            #   而 CLI 报的是 `out/final.mp4 (0 bytes)`。
+            #   典型「看起来成功实际失败」：报 [OK]，但用户要的路径上什么都没有。
+            #   修法：editing 成功后把 run_dir/final.mp4 拷到 output（两者不同才拷）。
+            if phase.name == "editing" and all(s.ok for s in phase_steps):
+                produced = Path(self.config.run_dir) / "final.mp4"
+                target = Path(output)
+                if produced.is_file() and produced.resolve() != target.resolve():
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        import shutil
+                        shutil.copy2(produced, target)
+                        self.logger.event(
+                            "final_copied",
+                            source=str(produced),
+                            target=str(target),
+                            reason="editing 产物落在 run_dir，需拷到用户请求的输出路径",
+                        )
+                    except OSError as exc:
+                        self.logger.event("final_copy_failed", target=str(target),
+                                          error=f"{type(exc).__name__}: {exc}")
             # V3.4 ADR-002：editing phase 失败时 soft-success（motion.mp4 落盘即视为成功）
             # 旧逻辑：halt_on_error=True → editing 失败返回 hard fail，但 motion_gen 已落盘
             # 新逻辑：editing 失败时若 motion.mp4 存在 → 复制为 final.mp4 → soft success
@@ -1022,6 +1066,7 @@ class PipelineAgent:
                         shot_count=len(storyboard.shots),
                         ok_shots=sum(1 for s in all_steps if s.ok and "image_gen" in s.name),
                         failed_shots=sum(1 for s in all_steps if not s.ok),
+                        bytes=output.stat().st_size if output.exists() else 0,
                         duration_seconds=elapsed,
                         source="motion_fallback",   # V3.4 ADR-002: 标记为降级产出
                         steps=all_steps,
@@ -1043,6 +1088,15 @@ class PipelineAgent:
                     intermediate_dir=str(intermediate_dir),
                     consistency=self._build_consistency(ctx),
                 )
+            # V5.0 Batch 3：人机协同节点 —— 到点就**干净停下**等人确认。
+            #   放在 halt 检查**之后**：phase 失败仍然是 error（不是 checkpoint）。
+            #   **只在真正跑过的 phase 上触发**：续跑（--resume-from script）时
+            #   prep 被跳过，若这里也检查就会**又停在 prep** —— 续跑永远走不下去
+            #   （这是实测抓到的 bug）。
+            if i >= from_idx:
+                stop = self._maybe_checkpoint(phase, ctx, all_steps, started, output)
+                if stop is not None:
+                    return stop
         # Post-flight QA
         image_paths = [
             str(a.path) for a in self.registry.by_kind_iter("image") if a.path
@@ -1097,6 +1151,10 @@ class PipelineAgent:
             shot_count=len(storyboard.shots),
             ok_shots=ok_shots,
             failed_shots=failed_shots,
+            # V5.0 Batch 3：**bytes 此前从未赋值**（恒 0）——
+            #   CLI 因此永远打印 "(0 bytes, Xs)"，看起来像"产出了空文件"。
+            #   现在按实际文件大小填，CLI 才能判断"产物真的落盘了"。
+            bytes=output.stat().st_size if output.exists() else 0,
             duration_seconds=time.monotonic() - started,
             source="ok",
             steps=all_steps,
@@ -1164,6 +1222,90 @@ class PipelineAgent:
         except Exception as exc:
             self.logger.event("continuity_eval_failed", error=str(exc))
             return None
+
+    def _maybe_checkpoint(
+        self,
+        phase: Phase,
+        ctx: dict,
+        all_steps: list[PipelineStep],
+        started: float,
+        output: Path,
+    ) -> PipelineResult | None:
+        """该 phase 是不是检查点？是的话停下并产出确认报告。
+
+        返回 `PipelineResult`（source="checkpoint"）表示"停下来等人"；
+        返回 None 表示继续跑。
+
+        **复用既有 resume 机制**：报告里写明 `resume_from`（下一个 phase），
+        人执行 `--resume-from <phase>` 即从断点续跑（走 registry.json 续跑路径）。
+        """
+        wanted = tuple(getattr(self.config, "checkpoint_phases", ()) or ())
+        if not wanted or phase.name not in wanted:
+            return None
+
+        import datetime
+
+        from hailuo_video.checkpoint import (
+            Checkpoint,
+            CheckpointStore,
+            build_report,
+            next_phase_after,
+        )
+
+        sb = ctx.get("storyboard")
+        question = {
+            "prep": "角色与场景参考图是否正确？角色长相/配色对得上吗？",
+        }.get(phase.name, f"{phase.name} 阶段的产出是否符合预期？")
+        try:
+            report_md, summary = build_report(
+                phase.name, sb, self.registry, question=question,
+            )
+        except Exception as exc:
+            report_md = f"# 确认报告生成失败\n\n{type(exc).__name__}: {exc}\n"
+            summary = {"phase": phase.name, "report_error": str(exc)}
+
+        report_path = Path(self.config.run_dir) / "checkpoints" / f"{phase.name}.md"
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(report_md, encoding="utf-8")
+        except OSError:
+            report_path = Path("")
+
+        resume_from = next_phase_after(DEFAULT_DAG, phase.name)
+        checkpoint = Checkpoint(
+            phase=phase.name,
+            question=question,
+            report_path=str(report_path),
+            resume_from=resume_from,
+            approved=None,
+            created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+            summary=summary,
+        )
+        try:
+            CheckpointStore(self.config.run_dir).append(checkpoint)
+        except OSError:
+            pass
+
+        self.logger.event(
+            "checkpoint",
+            phase=phase.name,
+            report_path=str(report_path),
+            resume_from=resume_from,
+            reason="到达人机协同节点 → 停下等人确认",
+        )
+        elapsed = time.monotonic() - started
+        return PipelineResult(
+            output=str(output),
+            shot_count=len(getattr(sb, "shots", []) or []),
+            ok_shots=sum(1 for s in all_steps if s.ok and "image_gen" in s.name),
+            failed_shots=sum(1 for s in all_steps if not s.ok),
+            duration_seconds=elapsed,
+            source="checkpoint",
+            error="",
+            steps=all_steps,
+            intermediate_dir=str(ctx.get("intermediate_dir", "")),
+            consistency=self._build_consistency(ctx),
+        )
 
     def _build_consistency(self, ctx: dict, registry_save_error: str = "") -> dict[str, Any]:
         """V3.8：把"降级/失败但不影响成片"的信息集中放进 PipelineResult.consistency。

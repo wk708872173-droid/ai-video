@@ -659,6 +659,18 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         print(f"[FAIL] tts backend：{e}", file=sys.stderr)
         return 2
     video_backend = ve.make_backend()
+    # V5.0 Batch 3：motion backend（真后端会烧 Hailuo 额度）
+    motion_backend = None
+    if getattr(args, "motion_backend", "minimax") == "mock":
+        from hailuo_video import motion_backend as mb_mod
+        motion_backend = mb_mod.MockMotionBackend()
+        print("[PIPELINE] motion backend=mock（不消耗 Hailuo 额度）", file=sys.stderr)
+    else:
+        print(
+            "[PIPELINE] motion backend=minimax —— **会消耗 Hailuo 额度（3 条/天）**。"
+            "试跑请加 --motion-backend mock",
+            file=sys.stderr,
+        )
 
     print(
         f"[PIPELINE] storyboard={sb_path} shots={len(storyboard.shots)} "
@@ -666,6 +678,12 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         f"video_effect={args.video_effect} -> {args.output}",
         file=sys.stderr,
     )
+
+    # V5.0 Batch 3：人机协同节点。
+    #   CLI 默认 = prep（参考图确认 —— 最贵也最容易出错的一步）。
+    #   `none` / `off` = 全关（纯自动跑到底；daily_cron 用这个）。
+    from hailuo_video.checkpoint import parse_checkpoint_phases
+    checkpoint_phases = parse_checkpoint_phases(getattr(args, "checkpoint", None))
 
     # V3.0：用 run_pipeline_v3（委托 orchestrator.PipelineAgent）
     result = pl.run_pipeline_v3(
@@ -683,10 +701,12 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         keep_intermediate=args.keep_intermediate,
         parallel=args.parallel,
         motion_budget=args.motion_budget,
+        motion_backend=motion_backend,
         aspect_ratio=getattr(args, "aspect_ratio", None),
         knowledge_path=getattr(args, "knowledge_path", None),
         run_dir=args.run_dir,
         resume_from=getattr(args, "resume_from", None),
+        checkpoint_phases=checkpoint_phases,
     )
 
     # V3.8 缺陷 2：static 降级镜头必须显式告知（旧行为完全静默）。
@@ -721,11 +741,50 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     if not result.ok:
         print(f"[FAIL] {result.error}", file=sys.stderr)
         return 1
+    # V5.0 Batch 3：checkpoint 停下 —— 不是失败，是"等人确认"。
+    if result.source == "checkpoint":
+        from hailuo_video.checkpoint import CheckpointStore
+        cp = CheckpointStore(args.run_dir).latest()
+        print("", file=sys.stderr)
+        print("[CHECKPOINT] 已到达人机协同节点，停下等你确认。", file=sys.stderr)
+        if cp is not None:
+            if cp.report_path:
+                print(f"[CHECKPOINT] 确认报告 -> {cp.report_path}", file=sys.stderr)
+            print(f"[CHECKPOINT] 待确认：{cp.question}", file=sys.stderr)
+            if cp.summary.get("ambiguity_warnings"):
+                print(
+                    f"[CHECKPOINT] ⚠️ {len(cp.summary['ambiguity_warnings'])} 条名字歧义告警"
+                    "（见报告；这是已知会出问题的名字）",
+                    file=sys.stderr,
+                )
+        if cp is not None and cp.resume_from:
+            print(
+                f"[CHECKPOINT] 确认无误后续跑：\n"
+                f"    python -m hailuo_video pipeline {sb_path} -o {args.output} "
+                f"--run-dir {args.run_dir} --resume-from {cp.resume_from}",
+                file=sys.stderr,
+            )
+            print(
+                "[CHECKPOINT] 不想确认就重来（不加 --resume-from）；"
+                "想全自动请加 --checkpoint none",
+                file=sys.stderr,
+            )
+        return 3          # 独立退出码：3 = 暂停待确认（不是错误）
     print(
         f"[OK] {result.output} (shots={result.shot_count}, "
         f"{result.bytes} bytes, {result.duration_seconds:.1f}s)",
         file=sys.stderr,
     )
+    # V5.0 Batch 3：R4「不静默降级」—— **0 字节 / 文件不存在不许报 OK**。
+    #   （editing 恒写 run_dir/final.mp4 的老 bug 修好后，这里是最后一道闸：
+    #   任何"产物没落到用户要的路径"的情况都必须显式失败。）
+    if result.bytes <= 0 or not Path(result.output).is_file():
+        print(
+            f"[FAIL] 成片未落到请求的输出路径：{result.output}"
+            "（0 字节或文件不存在）—— 这是产物路径问题，不是成功",
+            file=sys.stderr,
+        )
+        return 1
     if result.intermediate_dir:
         print(f"[OK] intermediate -> {result.intermediate_dir}", file=sys.stderr)
     return 0
@@ -972,9 +1031,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="运动参数知识库 JSON 路径（如 knowledge/motion_params.json；默认不记录）")
     p.add_argument("--dry-run", action="store_true",
                    help="V3.0 仅打印 DAG 后退出（不调任何 API）")
+    # V5.0 Batch 3：choices 从 DEFAULT_DAG 派生 —— 旧列表是写死的
+    #   ["prep","image_gen","video_synth","tts","concat","qa"]，
+    #   缺 script / motion_gen / editing，还留着 V3.2 已改名的 "concat"。
+    #   后果：**checkpoint 的续跑起点（prep 之后 = script）会被 argparse 拒掉**。
+    from hailuo_video.orchestrator import DEFAULT_DAG
     p.add_argument("--resume-from", default=None,
-                   choices=["prep", "image_gen", "video_synth", "tts", "concat", "qa"],
+                   choices=[ph.name for ph in DEFAULT_DAG],
                    help="V3.0 从指定 phase 开始（跳过已完成；与 --keep-intermediate 配合续跑）")
+    p.add_argument("--checkpoint", default=None,
+                   help="V5.0 人机协同节点：逗号分隔的 phase 名（默认 prep = 参考图确认）；"
+                        "none/off = 全关（纯自动跑到底）")
+    p.add_argument("--motion-backend", choices=["minimax", "mock"], default="minimax",
+                   help="V5.0 视频后端。**minimax 会消耗 Hailuo 额度（3 条/天）**；"
+                        "试跑/自测请用 mock")
     p.set_defaults(func=cmd_pipeline)
 
     pp = sub.add_parser("prep", help="V2.5 Phase 0：只生成 character sheet（缓存到 assets/）")

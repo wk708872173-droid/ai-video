@@ -834,10 +834,12 @@ class MotionGenerationAgent(Agent):
 
     def _default_execute(self, task: dict) -> AgentResult:
         try:
-            mb_mod._api_key()
             from hailuo_video.artifact import Artifact
             backend = task.get("motion_backend")
             if backend is None:
+                # V5.0 Batch 3：只有走**真**后端才需要 API key ——
+                #   mock 后端不该因为没配 key 就失败。
+                mb_mod._api_key()
                 backend = mb_mod.make_motion_backend("minimax")
             motion_result: MotionResult = backend.generate(
                 task["subject_action"],

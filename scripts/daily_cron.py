@@ -231,7 +231,13 @@ def run_once(
         return report
 
     # 配额允许 → 跑 pipeline
-    cmd = pipeline_cmd + [str(storyboard), "--motion-budget", "1"]   # 单次 ≤ 1（避免一次跑光预算）
+    # V5.0 Batch 3：显式 `--checkpoint none` —— 无人值守生产**不能**停在
+    #   等人确认上（客户第 1 优先级）。CLI 的默认值是 prep（交互式更安全），
+    #   定时任务必须显式关掉，否则 cron 会"跑完 prep 就停"——
+    #   看起来成功（exit 3）但没有成片，属于典型的"看起来成功实际失败"。
+    cmd = pipeline_cmd + [
+        str(storyboard), "--motion-budget", "1", "--checkpoint", "none",
+    ]   # 单次 ≤ 1（避免一次跑光预算）
     try:
         rc, out, err = _runner(cmd)
     except DailyCronError:

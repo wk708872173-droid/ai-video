@@ -551,6 +551,9 @@ def run_pipeline_v3(
     keep_intermediate: bool = True,
     parallel: int = 1,
     motion_budget: int = 3,                      # V3.1：默认 3（MiniMax Max 每天 hailuo-2.3 quota）
+    # V5.0 Batch 3：motion backend 可注入（None = 真后端）。
+    #   CLI 的 `--motion-backend mock` 用于**不烧 Hailuo 额度**地试跑整条链路。
+    motion_backend: Any | None = None,
     # V3.8 缺陷 1：画幅入口。None = 不指定 → 由 backend 读自己的 env
     #   （MINIMAX_IMAGE_ASPECT_RATIO / GEMINI_IMAGE_ASPECT_RATIO）→ 再退 "16:9"。
     #   旧实现根本没有这个参数，画幅被硬编码在 PipelineConfig 里，导致 9:16 不可达。
@@ -562,6 +565,9 @@ def run_pipeline_v3(
     resume_from: str | None = None,             # V3.2：跳过此 phase 之前的 phase
     load_registry: bool = True,                 # V3.2：是否从 run_dir/registry.json 加载历史
     project_context: Any | None = None,          # V3.5 ADR-007：ProjectContext 可选
+    # V5.0 Batch 3：人机协同节点。空元组 = 不设检查点（库层默认关闭）。
+    #   CLI 默认是 ("prep",)；daily_cron 显式传 () —— 无人值守生产不能等人确认。
+    checkpoint_phases: tuple[str, ...] = (),
 ) -> PipelineResult:
     """V3.0 入口：用 orchestrator.PipelineAgent 编排 4 个 phase。
 
@@ -584,10 +590,12 @@ def run_pipeline_v3(
         keep_intermediate=keep_intermediate,
         parallel=parallel,
         motion_budget=motion_budget,
+        motion_backend=motion_backend,
         aspect_ratio=aspect_ratio,
         knowledge_path=Path(knowledge_path) if knowledge_path else None,
         run_dir=Path(run_dir),
         log=StructuredLogger(Path(log_path)) if log_path else None,
+        checkpoint_phases=tuple(checkpoint_phases or ()),
         # V3.5 ADR-007：opt-in 注入 ProjectContext
         project_context=project_context,
     )
