@@ -123,6 +123,8 @@ class ScriptWriterAgent(Agent):
     """novel text → Storyboard JSON。"""
 
     name = "script_writer"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "script_writer"
 
     def _default_execute(self, task: dict) -> AgentResult:
         novel = task.get("novel", "")
@@ -165,6 +167,8 @@ class AssetPrepAgent(Agent):
     """Storyboard → assets/ 17 reference sheets。"""
 
     name = "asset_prep"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "asset_prep"
 
     def _default_execute(self, task: dict) -> AgentResult:
         sb: Storyboard | None = task.get("storyboard")
@@ -233,6 +237,8 @@ class ImageGenAgent(Agent):
     """prompt + subject_references[] → JPG。"""
 
     name = "image_gen"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "image_gen"
 
     def _default_execute(self, task: dict) -> AgentResult:
         backend = task.get("image_backend")
@@ -406,6 +412,8 @@ class VideoSynthAgent(Agent):
     """JPG → MP4（Ken Burns ffmpeg zoompan）。"""
 
     name = "video_synth"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "video_synth"
 
     def _default_execute(self, task: dict) -> AgentResult:
         video_backend = task.get("video_backend")
@@ -460,6 +468,8 @@ class TTSAgent(Agent):
     """text → MP3 + VTT。"""
 
     name = "tts"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "tts"
 
     def _default_execute(self, task: dict) -> AgentResult:
         tts_backend = task.get("tts_backend")
@@ -574,6 +584,8 @@ class QAAgent(Agent):
     """
 
     name = "qa"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "qa"
 
     def _default_execute(self, task: dict) -> AgentResult:
         image_paths = task.get("image_paths", [])
@@ -661,6 +673,8 @@ class EditingAgent(Agent):
     """
 
     name = "editing"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "editing"
 
     def _default_execute(self, task: dict) -> AgentResult:
         mode = task.get("mode", "color_normalize")
@@ -831,6 +845,8 @@ class MotionGenerationAgent(Agent):
     """V3.1：真 AI 视频生成（Hailuo-2.3）。"""
 
     name = "motion_gen"
+    # V5.0 Batch 5：角色契约（见 roles.py）
+    role_name = "motion_gen"
 
     def _default_execute(self, task: dict) -> AgentResult:
         try:
