@@ -37,6 +37,7 @@ from hailuo_video.agents import (
 from hailuo_video.artifact import Artifact, Registry
 from hailuo_video.log import LogEvent, StructuredLogger
 from hailuo_video.retry import RetryPolicy, with_retry
+from hailuo_video.observability import RunContext, aggregate, make_run_id
 from hailuo_video.router import MotionComplexityPolicy, Router
 
 
@@ -68,6 +69,9 @@ class PipelineResult:
     steps: list[PipelineStep] = field(default_factory=list)
     intermediate_dir: str = ""
     consistency: dict[str, Any] = field(default_factory=dict)   # V3 新增
+    # V5.0 Batch 4：聚合指标（per-phase 耗时 / 成功率 / 成本估算）。
+    #   **追加字段**，不改已有 12 个字段的语义。
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -91,6 +95,7 @@ class PipelineResult:
             "steps": [s.to_dict() if hasattr(s, "to_dict") else s.__dict__ for s in self.steps],
             "intermediate_dir": self.intermediate_dir,
             "consistency": dict(self.consistency),
+            "metrics": dict(self.metrics),
         }
 
 
@@ -128,6 +133,10 @@ class PipelineConfig:
     #   任何一次 pipeline 试跑都会**烧掉当天的 3 条/天额度**（本轮实测踩到）。
     #   None = 用真后端（保持生产行为不变）；CLI 的 `--motion-backend mock` 可显式换掉。
     motion_backend: Any = None
+    # V5.0 Batch 4：配额账本路径。None = **不记账**（库层默认关闭，保持既有行为）。
+    #   CLI 默认 `run/quota.json`（与 daily_cron 同一份文件 → 两条路径都记账）。
+    quota_path: Path | None = None
+    quota_budgets: dict[str, int] | None = None
     # V3.8 W4：运动参数知识库落盘路径。None = **不记录**（默认关闭）。
     #   默认关闭的原因：写库是副作用，且默认路径在仓库内（knowledge/motion_params.json）
     #   —— 测试跑一次就会污染人工维护的种子数据。CLI 显式传入才开启。
@@ -235,10 +244,18 @@ class PipelineAgent:
         #   此前 `knowledge_store.search/related/lessons` **生产零调用** ——
         #   库在积累但从不回灌。这条缓存是读侧通路的第一步。
         self._knowledge_store = None
+        # V5.0 Batch 4：配额账本（懒加载）+ 额度耗尽清单
+        self._quota_ledger_obj = None
+        self._quota_exhausted: list[dict[str, Any]] = []
+        # V5.0 Batch 4：run 上下文（run_id 贯穿 log.jsonl / audit / registry）
+        self._run_ctx = RunContext(
+            run_id=make_run_id(self._project_id(), seed=str(config.run_dir)),
+            project_id=self._project_id(),
+        )
         # V5.0 Batch 2：路由层。决策逻辑从 `_run_motion_gen_conditional`
         #   的函数体搬进 `router.MotionComplexityPolicy`，决策**带理由**落日志。
         self._router = Router(
-            on_decision=lambda phase, decision: self.logger.event(
+            on_decision=lambda phase, decision: self._emit(
                 "route_decision",
                 phase=phase,
                 target=decision.target,
@@ -268,12 +285,22 @@ class PipelineAgent:
         except Exception as exc:
             return None
         if not report.ok:
-            self.logger.event(
+            self._emit(
                 "dag_invalid",
                 issues=[i.to_dict() for i in report.issues],
                 reason="DEFAULT_DAG 的声明顺序 / 依赖与 inputs_from 不一致",
             )
         return report
+
+    def _emit(self, event_type: str, **payload: Any) -> None:
+        """写日志事件，**自动带上 run_id / project_id**。
+
+        V5.0 Batch 4：此前三套日志（log.jsonl / llm_audit / registry）**互不关联**，
+        一次 run 发生了什么无法拼出完整链路。run_id 让它们能串起来。
+        """
+        fields = dict(self._run_ctx.log_fields())
+        fields.update(payload)
+        self.logger.event(event_type, **fields)
 
     # ---------- V5.0 Batch 1：project_id 派生 ----------
 
@@ -394,7 +421,7 @@ class PipelineAgent:
         # 且 shots 非空，则 script_writer 无需跑（Storyboard 已是输入）。
         # 行为：跳过整个 script phase（不调 script_writer），并在 log 留 event。
         if phase.name == "script" and self._script_already_loaded(ctx):
-            self.logger.event("phase_skipped", phase="script", reason="storyboard_pre_loaded")
+            self._emit("phase_skipped", phase="script", reason="storyboard_pre_loaded")
             return []
 
         if not phase.is_parallel:
@@ -443,7 +470,7 @@ class PipelineAgent:
         #   要靠人工抽帧才发现（见 sample/story_arc_qingdao_autumn/README.md:81-89）。
         #   现在显式记 event + 落进 PipelineResult.consistency，CLI 打 [WARN]。
         if static_shots:
-            self.logger.event(
+            self._emit(
                 "motion_skipped_static",
                 shot_indices=static_shots,
                 count=len(static_shots),
@@ -452,7 +479,7 @@ class PipelineAgent:
         ctx["static_skipped_shots"] = static_shots
         if not selected:
             return []  # 无 candidate → 此 phase 跳过（normal）
-        self.logger.event("phase_started", phase="motion_gen",
+        self._emit("phase_started", phase="motion_gen",
                           candidate_count=int(decision.evidence.get("candidate_count", 0)),
                           budget=budget, chosen=len(selected))
         steps: list[PipelineStep] = []
@@ -630,7 +657,7 @@ class PipelineAgent:
                 stale_all = ctx.setdefault("stale_references", [])
                 for label in refs.stale_labels:
                     stale_all.append({"shot_idx": shot_idx, "label": label})
-                self.logger.event(
+                self._emit(
                     "reference_stale",
                     shot_idx=shot_idx,
                     labels=list(refs.stale_labels),
@@ -826,7 +853,7 @@ class PipelineAgent:
                 key = (v, tuple(names))
                 if key not in self._voice_collision_seen:
                     self._voice_collision_seen.add(key)
-                    self.logger.event(
+                    self._emit(
                         "voice_collision",
                         voice=v, characters=list(names),
                         reason="多个角色共用同一音色 —— 请在 storyboard 的 characters[].voice 里显式指定",
@@ -967,12 +994,84 @@ class PipelineAgent:
         )
         return list(refs.scene_urls)
 
+    # agent 名 → 可计费资源类型（成本治理的记账点）
+    _QUOTA_KIND_BY_AGENT: dict[str, str] = {
+        "image_gen": "image",
+        "motion_gen": "video",
+        "tts": "tts",
+    }
+
+    def _quota_ledger(self):
+        """取配额账本（懒加载 + 缓存）。未配置 → None（不记账）。"""
+        if self._quota_ledger_obj is not None:
+            return self._quota_ledger_obj
+        path = getattr(self.config, "quota_path", None)
+        if not path:
+            return None
+        try:
+            from hailuo_video.quota import QuotaLedger
+            self._quota_ledger_obj = QuotaLedger(
+                path, budgets=getattr(self.config, "quota_budgets", None) or None,
+            )
+        except Exception:
+            self._quota_ledger_obj = None
+        return self._quota_ledger_obj
+
+    def _consume_quota(self, agent_name: str) -> tuple[bool, str]:
+        """调 backend **之前**记账。返回 (是否放行, 拒绝原因)。
+
+        V5.0 Batch 4：配额记账此前**只在 `scripts/daily_cron.py`** ——
+        绕过 cron 直接跑 pipeline 时计数器与真实消耗**完全脱钩**
+        （本轮实测：提交 3 条真 Hailuo 视频，quota.json 里一条都没记）。
+        现在记账点在编排器里，**任何**调用路径都算。
+
+        额度不足 → 放行 False（调用方降级 + 明确告警，**不静默截断**）。
+        """
+        kind = self._QUOTA_KIND_BY_AGENT.get(agent_name)
+        if not kind:
+            return True, ""
+        ledger = self._quota_ledger()
+        if ledger is None:
+            return True, ""
+        try:
+            if ledger.consume(kind, 1):
+                return True, ""
+            rec = ledger.load()
+            return False, (
+                f"{kind} 额度已用尽（{rec.used(kind)}/{rec.budget(kind)}）"
+                f" → 跳过 {agent_name}"
+            )
+        except Exception as exc:
+            # 成本域硬失败：账本坏了**不能**静默当成"还有额度"
+            self._emit(
+                "quota_error", agent=agent_name, kind=kind,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False, f"配额账本异常（{type(exc).__name__}）→ 跳过 {agent_name}"
+
     def _run_agent_safe(self, agent_name: str, task: dict, phase_name: str, shot_idx: int) -> PipelineStep:
         """调 Agent.execute() + 异常捕获 + 写 step + 写 registry。"""
         from hailuo_video.agents import get_agent
         agent = self._agent_lookup.get(agent_name) or get_agent(agent_name)
         t0 = time.monotonic()
         step_name = f"{agent_name}_{shot_idx + 1:03d}" if shot_idx is not None else agent_name
+        # V5.0 Batch 4：成本门禁 —— 记账在调 backend 之前。
+        allowed, reason = self._consume_quota(agent_name)
+        if not allowed:
+            self._emit(
+                "quota_exhausted", agent=agent_name, phase=phase_name,
+                shot_idx=shot_idx, reason=reason,
+            )
+            ctx_quota = getattr(self, "_quota_exhausted", None)
+            if ctx_quota is None:
+                ctx_quota = []
+                self._quota_exhausted = ctx_quota
+            ctx_quota.append({"agent": agent_name, "shot_idx": shot_idx, "reason": reason})
+            return PipelineStep(
+                name=step_name, index=shot_idx or 0, ok=False,
+                duration_seconds=time.monotonic() - t0,
+                error=f"quota_exhausted: {reason}",
+            )
         try:
             agent.validate_inputs(task)
             # 注：with_retry.__enter__ 返回 result；不在 with 块内再次调用 agent.execute
@@ -993,6 +1092,19 @@ class PipelineAgent:
         elapsed = time.monotonic() - t0
         for art in result.artifacts:
             self.registry.add(art)
+        # V5.0 Batch 4：补上 **agent 级**日志事件。
+        #   `log.py` 的 docstring 早就举例 "agent_completed"，但全仓**从未 emit 过**
+        #   —— log.jsonl 里只看得到 phase 级事件，看不到单个 agent 做了什么。
+        self._emit(
+            "agent_completed",
+            agent=agent_name,
+            phase=phase_name,
+            shot_idx=shot_idx,
+            ok=result.ok,
+            duration_seconds=round(elapsed, 3),
+            artifacts_count=len(result.artifacts),
+            error=result.error[:200],
+        )
         return PipelineStep(
             name=step_name, index=shot_idx or 0, ok=result.ok,
             duration_seconds=elapsed,
@@ -1021,12 +1133,12 @@ class PipelineAgent:
             DEFAULT_DAG[i].name for i in range(from_idx)
         ]
         if skipped_phases:
-            self.logger.event("resume_skipped", phases=skipped_phases)
+            self._emit("resume_skipped", phases=skipped_phases)
         for i, phase in enumerate(DEFAULT_DAG):
             if i < from_idx:
                 # 跳过：phase 在 resume_from 之前 → 不跑（registry 已加载历史 artifacts）
                 phase_steps = []
-                self.logger.event("phase_skipped", phase=phase.name, reason="resume_from")
+                self._emit("phase_skipped", phase=phase.name, reason="resume_from")
             else:
                 phase_steps = self.run_phase(phase, ctx)
             all_steps.extend(phase_steps)
@@ -1044,14 +1156,14 @@ class PipelineAgent:
                         target.parent.mkdir(parents=True, exist_ok=True)
                         import shutil
                         shutil.copy2(produced, target)
-                        self.logger.event(
+                        self._emit(
                             "final_copied",
                             source=str(produced),
                             target=str(target),
                             reason="editing 产物落在 run_dir，需拷到用户请求的输出路径",
                         )
                     except OSError as exc:
-                        self.logger.event("final_copy_failed", target=str(target),
+                        self._emit("final_copy_failed", target=str(target),
                                           error=f"{type(exc).__name__}: {exc}")
             # V3.4 ADR-002：editing phase 失败时 soft-success（motion.mp4 落盘即视为成功）
             # 旧逻辑：halt_on_error=True → editing 失败返回 hard fail，但 motion_gen 已落盘
@@ -1059,7 +1171,7 @@ class PipelineAgent:
             if phase.name == "editing" and any(not s.ok for s in phase_steps):
                 motion_fallback = self._motion_mp4_fallback(intermediate_dir, output)
                 if motion_fallback:
-                    self.logger.event("editing_soft_success", fallback_path=str(motion_fallback))
+                    self._emit("editing_soft_success", fallback_path=str(motion_fallback))
                     elapsed = time.monotonic() - started
                     return PipelineResult(
                         output=str(output),
@@ -1142,10 +1254,23 @@ class PipelineAgent:
             self.registry.save_json(self.config.run_dir / "registry.json")
         except OSError as exc:
             registry_save_error = f"{type(exc).__name__}: {exc}"
-            self.logger.event("registry_save_failed", error=registry_save_error)
+            self._emit("registry_save_failed", error=registry_save_error)
         consistency = self._build_consistency(ctx, registry_save_error)
         ok_shots = sum(1 for s in all_steps if s.ok and "image_gen" in s.name)
         failed_shots = sum(1 for s in all_steps if not s.ok)
+        # V5.0 Batch 4：聚合指标 + run 元信息（串起三套日志）
+        metrics = aggregate(all_steps, run_id=self._run_ctx.run_id).to_dict()
+        metrics["cost_estimate"] = self._estimate_cost(all_steps)
+        try:
+            from hailuo_video.observability import write_run_meta
+            write_run_meta(
+                self.config.run_dir / "registry.json",
+                {"run_id": self._run_ctx.run_id,
+                 "project_id": self._run_ctx.project_id,
+                 "started_at": self._run_ctx.started_at},
+            )
+        except OSError:
+            pass
         return PipelineResult(
             output=str(output),
             shot_count=len(storyboard.shots),
@@ -1160,6 +1285,7 @@ class PipelineAgent:
             steps=all_steps,
             intermediate_dir=str(intermediate_dir),
             consistency=consistency,
+            metrics=metrics,
         )
 
     def _record_knowledge(self, ctx: dict, steps: list[PipelineStep]) -> None:
@@ -1196,7 +1322,7 @@ class PipelineAgent:
                 )
             store.save()
         except Exception as exc:
-            self.logger.event("knowledge_record_failed", error=str(exc))
+            self._emit("knowledge_record_failed", error=str(exc))
 
     def _evaluate_continuity(self, ctx: dict) -> Any:
         """V3.8 W3：跨镜连续性评估（按 shot 顺序取每镜首帧）。
@@ -1220,7 +1346,7 @@ class PipelineAgent:
         try:
             return evaluate_shot_continuity(paths, color_locks=locks)
         except Exception as exc:
-            self.logger.event("continuity_eval_failed", error=str(exc))
+            self._emit("continuity_eval_failed", error=str(exc))
             return None
 
     def _maybe_checkpoint(
@@ -1286,7 +1412,7 @@ class PipelineAgent:
         except OSError:
             pass
 
-        self.logger.event(
+        self._emit(
             "checkpoint",
             phase=phase.name,
             report_path=str(report_path),
@@ -1305,6 +1431,24 @@ class PipelineAgent:
             steps=all_steps,
             intermediate_dir=str(ctx.get("intermediate_dir", "")),
             consistency=self._build_consistency(ctx),
+        )
+
+    def _estimate_cost(self, all_steps: list[PipelineStep]) -> dict[str, Any]:
+        """成本**估算**（相对单位，非账单）。
+
+        V5.0 Batch 4：只给量级供 A/B 比较 —— 真实金额随套餐/汇率变，写死会误导。
+        """
+        from hailuo_video.observability import estimate_cost
+        image_calls = sum(1 for s in all_steps if s.name.startswith("image_gen"))
+        video_seconds = sum(
+            float(s.duration_seconds or 0.0) for s in all_steps
+            if s.name.startswith("motion_gen")
+        )
+        tts_calls = sum(1 for s in all_steps if s.name.startswith("tts"))
+        return estimate_cost(
+            image_calls=image_calls,
+            video_seconds=video_seconds,
+            tts_calls=tts_calls,
         )
 
     def _build_consistency(self, ctx: dict, registry_save_error: str = "") -> dict[str, Any]:
@@ -1328,4 +1472,9 @@ class PipelineAgent:
             consistency["continuity_ok"] = continuity.ok
         if registry_save_error:
             consistency["registry_save_error"] = registry_save_error
+        # V5.0 Batch 4：额度耗尽清单（成本降级必须可见，不能静默）
+        quota_exhausted = list(getattr(self, "_quota_exhausted", []) or [])
+        if quota_exhausted:
+            consistency["quota_exhausted"] = quota_exhausted
+            consistency["quota_exhausted_count"] = len(quota_exhausted)
         return consistency

@@ -32,34 +32,23 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+# V5.0 Batch 4：配额账本收敛到**单一实现**（`sandbox/hailuo_video/quota.py`）。
+#   此前本文件自带一份 QuotaRecord / load_quota / save_quota ——
+#   与编排器侧的记账是两套实现，会漂移（cron 记了、手动跑没记）。
+#   现在两边共用一份账本：`run/quota.json`。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sandbox"))
+from hailuo_video.quota import (  # noqa: E402
+    QuotaError,
+    QuotaRecord,
+    save_quota,
+)
+from hailuo_video.quota import load_quota as _load_quota_raw  # noqa: E402
+
 
 # ---------- Errors / Data ----------
 
 class DailyCronError(RuntimeError):
     """daily_cron 调度失败。"""
-
-
-@dataclass
-class QuotaRecord:
-    """quota.json 单日记录。"""
-    date: str = ""                       # YYYY-MM-DD
-    hailuo_calls_used: int = 0           # 今日已用
-    daily_budget: int = 3                # 当日预算（默认 3）
-    last_run_at: str = ""                # ISO timestamp
-    last_status: str = ""                # "ok" | "skipped_quota" | "fail"
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "QuotaRecord":
-        return cls(
-            date=str(data.get("date", "")),
-            hailuo_calls_used=int(data.get("hailuo_calls_used", 0)),
-            daily_budget=int(data.get("daily_budget", 3)),
-            last_run_at=str(data.get("last_run_at", "")),
-            last_status=str(data.get("last_status", "")),
-        )
 
 
 @dataclass
@@ -117,40 +106,21 @@ def _today() -> str:
     return dt.date.today().isoformat()
 
 
-def load_quota(quota_file: str | Path) -> QuotaRecord:
-    """读 quota.json；不存在 / 跨日 → 新建今日记录。"""
-    p = Path(quota_file)
-    if not p.is_file():
-        return QuotaRecord(date=_today())
-    try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise DailyCronError(f"quota.json 解析失败：{exc}") from exc
-    rec = QuotaRecord.from_dict(raw)
-    if rec.date != _today():
-        # 跨日 → 重置计数
-        rec = QuotaRecord(date=_today(), daily_budget=rec.daily_budget)
-    return rec
-
-
-def save_quota(quota_file: str | Path, rec: QuotaRecord) -> None:
-    """原子写 quota.json（tmp + os.replace）。"""
-    p = Path(quota_file)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    try:
-        tmp.write_text(json.dumps(rec.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, p)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
-
 def quota_remaining(rec: QuotaRecord) -> int:
-    return max(0, rec.daily_budget - rec.hailuo_calls_used)
+    """剩余 video 额度（新账本 API；旧字段名仍兼容）。"""
+    return rec.remaining("video")
+
+
+def load_quota(quota_file: str | Path) -> QuotaRecord:
+    """读 quota.json；损坏 → DailyCronError（**保持本脚本原有的错误契约**）。
+
+    V5.0 Batch 4：账本实现搬到 `hailuo_video.quota`，错误类型变成 `QuotaError`。
+    这里转一层，让调用方（`main` / 单测）的 except 分支不用改。
+    """
+    try:
+        return _load_quota_raw(quota_file)
+    except QuotaError as exc:
+        raise DailyCronError(f"quota.json 解析失败：{exc}") from exc
 
 
 # ---------- 日报 ----------
@@ -257,8 +227,19 @@ def run_once(
         write_report(report_file, report)
         raise DailyCronError(f"pipeline 失败 rc={rc}")
 
-    # pipeline 成功 → 计数 +1
-    rec.hailuo_calls_used += 1
+    # pipeline 成功 → 记账。
+    #   V5.0 Batch 4：编排器现在**按实际调用次数**记账（每条真 Hailuo 视频记 1），
+    #   cron 若再无条件 +1 就是**重复计数**（跑一次算 2）→ 额度提前耗尽。
+    #   所以 cron 变成**兜底记账者**：
+    #     - 编排器已经记了（账本变了）→ 不重复记
+    #     - 编排器没记（本次没生成真视频 / 用了别的 quota 文件）→ cron 兜底 +1
+    #   这保持了旧语义（"跑一次 pipeline 记一次"），又消除了双重计数。
+    after = load_quota(quota_file)
+    # 保留本次的临时 budget 覆盖（它只在内存里，账本文件里还是旧值）
+    after.daily_budget = rec.daily_budget
+    if after.hailuo_calls_used <= rec.hailuo_calls_used:
+        after.hailuo_calls_used = rec.hailuo_calls_used + 1
+    rec = after
     rec.last_status = "ok"
     rec.last_run_at = now_iso
     save_quota(quota_file, rec)

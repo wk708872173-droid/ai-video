@@ -702,6 +702,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         parallel=args.parallel,
         motion_budget=args.motion_budget,
         motion_backend=motion_backend,
+        quota_path=(args.quota_file or None),
         aspect_ratio=getattr(args, "aspect_ratio", None),
         knowledge_path=getattr(args, "knowledge_path", None),
         run_dir=args.run_dir,
@@ -721,6 +722,14 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     registry_err = (result.consistency or {}).get("registry_save_error")
     if registry_err:
         print(f"[WARN] registry.json 落盘失败（续跑信息缺失）：{registry_err}", file=sys.stderr)
+    # V5.0 Batch 4：额度耗尽 → 明确告警（成本降级不能静默）。
+    quota_exhausted = (result.consistency or {}).get("quota_exhausted") or []
+    if quota_exhausted:
+        for item in quota_exhausted:
+            print(
+                f"[WARN] 配额耗尽：{item.get('reason')}（该镜头被跳过）",
+                file=sys.stderr,
+            )
     # V3.8 W1：过期 reference 被跳过 → 角色一致性锚定缺失，必须显式告知。
     stale_refs = (result.consistency or {}).get("stale_references") or []
     if stale_refs:
@@ -1045,6 +1054,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--motion-backend", choices=["minimax", "mock"], default="minimax",
                    help="V5.0 视频后端。**minimax 会消耗 Hailuo 额度（3 条/天）**；"
                         "试跑/自测请用 mock")
+    p.add_argument("--quota-file", default="run/quota.json",
+                   help="V5.0 配额账本路径（默认 run/quota.json，与 daily_cron 同一份 → "
+                        "手动跑与定时跑都记账）；传空串则不记账")
     p.set_defaults(func=cmd_pipeline)
 
     pp = sub.add_parser("prep", help="V2.5 Phase 0：只生成 character sheet（缓存到 assets/）")

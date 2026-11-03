@@ -554,6 +554,9 @@ def run_pipeline_v3(
     # V5.0 Batch 3：motion backend 可注入（None = 真后端）。
     #   CLI 的 `--motion-backend mock` 用于**不烧 Hailuo 额度**地试跑整条链路。
     motion_backend: Any | None = None,
+    # V5.0 Batch 4：配额账本路径（None = 不记账；CLI 默认 run/quota.json，
+    #   与 daily_cron 同一份文件 → cron 与手动两条路径都记账）。
+    quota_path: str | Path | None = None,
     # V3.8 缺陷 1：画幅入口。None = 不指定 → 由 backend 读自己的 env
     #   （MINIMAX_IMAGE_ASPECT_RATIO / GEMINI_IMAGE_ASPECT_RATIO）→ 再退 "16:9"。
     #   旧实现根本没有这个参数，画幅被硬编码在 PipelineConfig 里，导致 9:16 不可达。
@@ -591,6 +594,7 @@ def run_pipeline_v3(
         parallel=parallel,
         motion_budget=motion_budget,
         motion_backend=motion_backend,
+        quota_path=Path(quota_path) if quota_path else None,
         aspect_ratio=aspect_ratio,
         knowledge_path=Path(knowledge_path) if knowledge_path else None,
         run_dir=Path(run_dir),
